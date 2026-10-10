@@ -29,15 +29,15 @@ for ckpt, dtype, tokens in configs:
         model.gradient_checkpointing_enable()
     opt = torch.optim.AdamW(model.parameters(), lr=1e-5, fused=True)
     torch.cuda.reset_peak_memory_stats()
-    it = train.batches(data, tokens, np.random.default_rng(0), model.config.eos_token_id)
+    it = train.batches(data, tokens, np.random.default_rng(0), model.config.eos_token_id, 0.3)
     times, ntok = [], 0
     try:
         for i in range(8):
-            x, y, att = (t.cuda() for t in next(it))
+            x, y, att, w = (t.cuda() for t in next(it))
             torch.cuda.synchronize()
             t0 = time.time()
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss = train.loss_fn(model, x, y, att)
+                loss = train.loss_fn(model, x, y, att, w)
             loss.backward()
             opt.step()
             opt.zero_grad(set_to_none=True)

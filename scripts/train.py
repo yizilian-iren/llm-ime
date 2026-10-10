@@ -1,6 +1,7 @@
 """Full fine-tune of a causal LM on data/train/*.npz (runs on dgx).
 
-Batches are built by token budget from length-sorted buckets, right-padded; loss only on target tokens.
+Batches are built by token budget from length-sorted buckets, right-padded. Loss on target tokens, plus the
+context tokens at --ctx-weight (plain LM loss, so the model keeps its language ability); valid is target-only.
 
   .venv-train/bin/python scripts/train.py --out runs/r1 [--max-steps 200]
 """
@@ -20,11 +21,12 @@ from transformers import AutoModelForCausalLM
 
 def load(path):
     d = np.load(path)
-    return d["ids"], d["offsets"], d["plen"]
+    clen = d["clen"] if "clen" in d else np.zeros_like(d["plen"])
+    return d["ids"], d["offsets"], d["plen"], clen
 
 
-def batches(data, tokens_per_batch, rng, pad_id):
-    ids, off, plen = data
+def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0):
+    ids, off, plen, clen = data
     lens = np.diff(off)
     order = rng.permutation(len(lens))
     # bucket into chunks of 100 batches' worth, sort within chunk by length to limit padding
@@ -48,39 +50,44 @@ def batches(data, tokens_per_batch, rng, pad_id):
             x = np.full((len(g), T), pad_id, dtype=np.int64)
             y = np.full((len(g), T), -100, dtype=np.int64)
             att = np.zeros((len(g), T), dtype=np.int64)
+            w = np.zeros((len(g), T), dtype=np.float32)
             for r, i in enumerate(g):
                 seq = ids[off[i] : off[i + 1]]
                 x[r, : len(seq)] = seq
                 att[r, : len(seq)] = 1
                 y[r, plen[i] : len(seq)] = seq[plen[i] :]
-            yield torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(att)
+                w[r, plen[i] : len(seq)] = 1.0
+                if ctx_weight and clen[i] > 1:
+                    y[r, 1 : clen[i]] = seq[1 : clen[i]]
+                    w[r, 1 : clen[i]] = ctx_weight
+            yield torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(att), torch.from_numpy(w)
 
 
-def loss_fn(model, x, y, att):
+def loss_fn(model, x, y, att, w):
     # Only target positions go through lm_head: full-vocab logits for every token would be tens of GB.
     # Chunked so the (targets x 151k vocab) logits never exist all at once.
     h = model.model(input_ids=x, attention_mask=att).last_hidden_state[:, :-1]
     tgt = y[:, 1:]
     mask = tgt != -100
-    h, tgt = h[mask], tgt[mask]
+    h, tgt, w = h[mask], tgt[mask], w[:, 1:][mask]
     total = 0.0
     for i in range(0, len(tgt), 2048):
         total = total + torch.utils.checkpoint.checkpoint(_ce_chunk, model.lm_head, h[i : i + 2048], tgt[i : i + 2048],
-                                                          use_reentrant=False)
-    return total / len(tgt)
+                                                          w[i : i + 2048], use_reentrant=False)
+    return total / w.sum()
 
 
-def _ce_chunk(head, h, t):
-    return F.cross_entropy(head(h).float(), t, reduction="sum")
+def _ce_chunk(head, h, t, w):
+    return (F.cross_entropy(head(h).float(), t, reduction="none") * w).sum()
 
 
 @torch.no_grad()
 def evaluate(model, data, pad_id, dev):
     model.eval()
     tot, n = 0.0, 0
-    for x, y, att in batches(data, 16384, np.random.default_rng(0), pad_id):
+    for x, y, att, w in batches(data, 16384, np.random.default_rng(0), pad_id):
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = loss_fn(model, x.to(dev), y.to(dev), att.to(dev))
+            loss = loss_fn(model, x.to(dev), y.to(dev), att.to(dev), w.to(dev))
         k = int((y[:, 1:] != -100).sum())
         tot += float(loss) * k
         n += k
@@ -100,7 +107,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="models/Qwen3-0.6B-Base")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--lr", type=float, default=5e-5)
+    ap.add_argument("--data", default="data/train")
+    ap.add_argument("--lr", type=float, default=2e-5)
+    ap.add_argument("--ctx-weight", type=float, default=0.3, help="LM loss weight on context tokens (0 = target only)")
     ap.add_argument("--tokens", type=int, default=16384, help="tokens per batch (padded)")
     ap.add_argument("--ckpt", action="store_true", help="gradient checkpointing: ~18 GB instead of ~52 GB, but 20%% slower")
     ap.add_argument("--mem-frac", type=float, default=0.5, help="cap on this process's share of the shared GPU memory")
@@ -120,7 +129,7 @@ def main():
     if a.ckpt:
         model.gradient_checkpointing_enable()
     pad_id = model.config.eos_token_id
-    train, valid = load("data/train/train.npz"), load("data/train/valid.npz")
+    train, valid = load(f"{a.data}/train.npz"), load(f"{a.data}/valid.npz")
     n_tok = int(train[1][-1])
     steps = a.max_steps or int(a.epochs * n_tok / (a.tokens * 0.8))
     print(f"{len(train[2])} samples, {n_tok / 1e6:.0f}M tokens, ~{steps} steps", flush=True)
@@ -133,10 +142,10 @@ def main():
     step, t0, seen = 0, time.time(), 0
     print(f"step 0 valid {evaluate(model, valid, pad_id, dev):.4f}", flush=True)
     while step < steps:
-        for x, y, att in batches(train, a.tokens, rng, pad_id):
-            x, y, att = x.to(dev), y.to(dev), att.to(dev)
+        for x, y, att, w in batches(train, a.tokens, rng, pad_id, a.ctx_weight):
+            x, y, att, w = x.to(dev), y.to(dev), att.to(dev), w.to(dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss = loss_fn(model, x, y, att)
+                loss = loss_fn(model, x, y, att, w)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()

@@ -39,6 +39,23 @@ def wiki_articles(held=False):
                 yield str(aid), text
 
 
+def wiki_with_prefix(max_chars=60_000_000, prefix_chars=64):
+    """(article text just before the sentence, sentence): the context an IME would see, as in the eval set."""
+    n = 0
+    for _, text in wiki_articles():
+        pos = 0
+        for m in LINE_SPLIT.finditer(text + "\n"):
+            s = text[pos : m.start()]
+            lead = len(s) - len(s.lstrip())
+            if len(s.strip()) >= 4:
+                start = pos + lead
+                yield text[max(0, start - prefix_chars) : start], s.strip()
+                n += len(s.strip())
+            pos = m.end()
+        if n >= max_chars:
+            return
+
+
 def wiki(max_chars=60_000_000):
     n = 0
     for _, text in wiki_articles():
