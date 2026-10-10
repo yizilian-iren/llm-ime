@@ -7,6 +7,7 @@ readings, so the same lattice covers full pinyin, initials, and half-typed sylla
 import math
 import pickle
 import re
+import unicodedata
 
 import jieba
 from pypinyin.pinyin_dict import pinyin_dict
@@ -16,7 +17,13 @@ from ime.pinyin import syllables
 jieba.setLogLevel(60)
 HAN_RUN = re.compile(r"[一-鿿]+")
 BOS = "<s>"
-TONES = str.maketrans("āáǎàēéěèīíǐìōóǒòūúǔùüǘǚǜńňǹḿ", "aaaaeeeeiiiioooouuuuvvvvvnnnm")
+
+
+def toneless(r: str) -> str:
+    r = unicodedata.normalize("NFC", r)
+    for u in "üǖǘǚǜ":
+        r = r.replace(u, "v")
+    return "".join(c for c in unicodedata.normalize("NFD", r) if not unicodedata.combining(c))
 
 
 def char_readings_table() -> dict[str, list[str]]:
@@ -24,7 +31,7 @@ def char_readings_table() -> dict[str, list[str]]:
     for cp, rs in pinyin_dict.items():
         ch = chr(cp)
         if "一" <= ch <= "鿿":
-            table[ch] = sorted({r.translate(TONES) for r in rs.split(",")})
+            table[ch] = sorted({toneless(r) for r in rs.split(",")})
     return table
 
 

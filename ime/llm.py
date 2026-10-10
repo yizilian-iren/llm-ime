@@ -23,9 +23,13 @@ MAX_COMBOS = 16  # reading combinations per token (polyphones multiply)
 class LLMEngine:
     name = "llm"
 
-    def __init__(self, model="models/qwen3-0.6b-base-bf16", beam=6, abbrev_penalty=1.0, empty_prompt="\n"):
+    def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
+                 empty_prompt="\n"):
         self.model, self.tok = load(model)
-        self.beam, self.alpha, self.empty_prompt = beam, abbrev_penalty, empty_prompt
+        # progress_bonus: nats credited per key consumed when ranking beams, so hypotheses that have
+        # consumed more of the input are not out-ranked just for having paid for more characters.
+        self.beam, self.alpha, self.beta, self.empty_prompt = beam, abbrev_penalty, progress_bonus, empty_prompt
+        self.prefixes = {r[:i] for rs in char_readings_table().values() for r in rs for i in range(1, len(r) + 1)}
         self.root, self.tok_text = self._token_trie(model)
         self._ctx_key, self._ctx_cache, self._ctx_logits = None, None, None
         self.stats = {"forward_ms": 0.0, "calls": 0}
@@ -101,26 +105,34 @@ class LLMEngine:
         """Per-beam copy of the context cache (rows idx of a batch-1 cache)."""
         cache = make_prompt_cache(self.model)
         for c, src in zip(cache, self._ctx_cache):
-            k, v = src.state
-            c.keys, c.values, c.offset = k[idx], v[idx], src.offset
+            k, v, off = src.state  # whole preallocated buffer, so the next update doesn't reallocate
+            c.keys, c.values, c.offset = k[idx], v[idx], off
         return cache
 
     @staticmethod
     def _reorder(cache, idx):
         for c in cache:
-            c.keys = c.keys[idx, :, : c.offset]
-            c.values = c.values[idx, :, : c.offset]
+            c.keys = c.keys[idx]
+            c.values = c.values[idx]
 
     def convert(self, context, keys, k=5):
         if not keys:
             return []
         self._prefill(context)
         n = len(keys)
+        # feasible[p]: keys[p:] can be split into reading prefixes (else that hypothesis is a dead end)
+        feasible = [False] * n + [True]
+        for p in range(n - 1, -1, -1):
+            feasible[p] = any(feasible[p + L] for L in range(1, min(6, n - p) + 1) if keys[p : p + L] in self.prefixes)
+        if not feasible[0]:
+            return []
         edge_cache = {}
 
         def edges_at(p):
             if p not in edge_cache:
-                edge_cache[p] = self.edges(keys, p)
+                ends, tids, abs_ = self.edges(keys, p)
+                ok = np.array([feasible[e] for e in ends], dtype=bool)
+                edge_cache[p] = (ends[ok], tids[ok], abs_[ok]) if len(ends) else (ends, tids, abs_)
             return edge_cache[p]
 
         logits = self._ctx_logits
@@ -142,7 +154,7 @@ class LLMEngine:
             if not cand_s:
                 break
             S, P, T, E = (np.concatenate(x) for x in (cand_s, cand_parent, cand_tid, cand_end))
-            order = np.argsort(-S)
+            order = np.argsort(-(S + self.beta * E))
             nxt, parents, tids = [], [], []
             for j in order:
                 text = active[P[j]][1] + self.tok_text[int(T[j])]
@@ -155,7 +167,7 @@ class LLMEngine:
                 if len(nxt) >= self.beam and len(finished) >= k * 3:
                     break
             finished.sort(reverse=True)
-            if not nxt or (len(finished) >= k and finished[k - 1][0] >= nxt[0][0]):
+            if not nxt or (len(finished) >= k and finished[k - 1][0] >= max(h[0] for h in nxt)):
                 break
             idx = mx.array(parents)
             if cache is None:

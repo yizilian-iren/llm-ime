@@ -5,3 +5,4 @@ data/private/
 data/corpus/
 models/
 .DS_Store
+logs/
