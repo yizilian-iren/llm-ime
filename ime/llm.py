@@ -15,6 +15,7 @@ import numpy as np
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache
 
+from ime import fmt
 from ime.ngram import Node, char_readings_table
 
 MAX_COMBOS = 16  # reading combinations per token (polyphones multiply)
@@ -24,14 +25,20 @@ class LLMEngine:
     name = "llm"
 
     def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
-                 empty_prompt="\n"):
+                 empty_prompt="\n", keys_in_prompt=None):
         self.model, self.tok = load(model)
+        # Fine-tuned models see the keys in the prompt (ime.fmt) and score the end of the sentence;
+        # base models just continue the context.
+        if keys_in_prompt is None:
+            keys_in_prompt = os.path.exists(os.path.join(model, "ime_format"))
+        self.keys_in_prompt = bool(int(keys_in_prompt))
+        self.eos = self.tok.eos_token_id
         # progress_bonus: nats credited per key consumed when ranking beams, so hypotheses that have
         # consumed more of the input are not out-ranked just for having paid for more characters.
         self.beam, self.alpha, self.beta, self.empty_prompt = beam, abbrev_penalty, progress_bonus, empty_prompt
         self.prefixes = {r[:i] for rs in char_readings_table().values() for r in rs for i in range(1, len(r) + 1)}
         self.root, self.tok_text = self._token_trie(model)
-        self._ctx_key, self._ctx_cache, self._ctx_logits = None, None, None
+        self._ids, self._ctx_cache, self._ctx_logits = [], None, None
         self.stats = {"forward_ms": 0.0, "calls": 0}
 
     # --- token index ----------------------------------------------------------
@@ -91,15 +98,25 @@ class LLMEngine:
         return ends, tids, abs_
 
     # --- model ----------------------------------------------------------------
-    def _prefill(self, context):
-        prompt = context[-64:] if context.strip() else self.empty_prompt
-        if prompt == self._ctx_key:
+    def _prefill(self, prompt):
+        """Bring the batch-1 cache to `prompt`, reusing the longest common token prefix of the last one."""
+        ids = self.tok.encode(prompt)
+        if ids == self._ids:
             return
-        ids = mx.array(self.tok.encode(prompt))[None]
-        cache = make_prompt_cache(self.model)
-        logits = self.model(ids, cache=cache)[:, -1, :]
-        mx.eval(logits, [c.state for c in cache])
-        self._ctx_key, self._ctx_cache, self._ctx_logits = prompt, cache, logits
+        common = 0
+        for a, b in zip(ids, self._ids):
+            if a != b:
+                break
+            common += 1
+        common = min(common, len(ids) - 1)  # always feed at least one token to get fresh logits
+        if self._ctx_cache is None or common == 0:
+            self._ctx_cache, common = make_prompt_cache(self.model), 0
+        else:
+            for c in self._ctx_cache:
+                c.trim(c.offset - common)
+        logits = self.model(mx.array(ids[common:])[None], cache=self._ctx_cache)[:, -1, :]
+        mx.eval(logits, [c.state for c in self._ctx_cache])
+        self._ids, self._ctx_logits = ids, logits
 
     def _fork_cache(self, idx):
         """Per-beam copy of the context cache (rows idx of a batch-1 cache)."""
@@ -118,7 +135,10 @@ class LLMEngine:
     def convert(self, context, keys, k=5):
         if not keys:
             return []
-        self._prefill(context)
+        if self.keys_in_prompt:
+            self._prefill(fmt.prompt(context, keys))
+        else:
+            self._prefill(context[-64:] if context.strip() else self.empty_prompt)
         n = len(keys)
         # feasible[p]: keys[p:] can be split into reading prefixes (else that hypothesis is a dead end)
         feasible = [False] * n + [True]
@@ -139,11 +159,14 @@ class LLMEngine:
         active = [(0.0, "", 0)]  # (score, text, key position)
         cache = None
         finished = []
-        for _step in range(n):
+        for _step in range(n + 1):
             lp = (logits - mx.logsumexp(logits, axis=-1, keepdims=True)).astype(mx.float32)
             lp = np.array(lp)
             cand_s, cand_parent, cand_tid, cand_end = [], [], [], []
-            for b, (score, _text, p) in enumerate(active):
+            for b, (score, text, p) in enumerate(active):
+                if p == n:  # all keys consumed, waiting for its end-of-sentence score
+                    finished.append((score + float(lp[b, self.eos]), text))
+                    continue
                 ends, tids, abs_ = edges_at(p)
                 if len(tids) == 0:
                     continue
@@ -152,13 +175,14 @@ class LLMEngine:
                 cand_tid.append(tids)
                 cand_end.append(ends)
             if not cand_s:
+                finished.sort(reverse=True)
                 break
             S, P, T, E = (np.concatenate(x) for x in (cand_s, cand_parent, cand_tid, cand_end))
             order = np.argsort(-(S + self.beta * E))
             nxt, parents, tids = [], [], []
             for j in order:
                 text = active[P[j]][1] + self.tok_text[int(T[j])]
-                if E[j] == n:
+                if E[j] == n and not self.keys_in_prompt:
                     finished.append((float(S[j]), text))
                 elif len(nxt) < self.beam:
                     nxt.append((float(S[j]), text, int(E[j])))
