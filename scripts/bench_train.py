@@ -1,4 +1,8 @@
-"""Time a few training steps under different settings (runs on dgx)."""
+"""Time a few training steps under different settings.
+
+Usage: bench_train.py [mem_frac] [ckpt:dtype:tokens ...]   e.g. 0.9 1:bf16:16384 0:bf16:8192
+Default: dgx settings (mem_frac 0.5, the four configs below).
+"""
 
 import sys
 import time
@@ -10,11 +14,14 @@ sys.path.insert(0, "scripts")
 import train  # noqa: E402
 from transformers import AutoModelForCausalLM  # noqa: E402
 
-torch.cuda.set_per_process_memory_fraction(0.5)
+torch.cuda.set_per_process_memory_fraction(float(sys.argv[1]) if len(sys.argv) > 1 else 0.5)
 torch.backends.cuda.matmul.allow_tf32 = True
 data = train.load("data/train/train.npz")
 configs = [(True, torch.float32, 32768), (False, torch.float32, 16384), (False, torch.bfloat16, 16384),
            (True, torch.bfloat16, 65536)]
+if len(sys.argv) > 2:
+    dtypes = {"fp32": torch.float32, "bf16": torch.bfloat16}
+    configs = [(c == "1", dtypes[d], int(t)) for c, d, t in (a.split(":") for a in sys.argv[2:])]
 for ckpt, dtype, tokens in configs:
     model = AutoModelForCausalLM.from_pretrained("models/Qwen3-0.6B-Base", dtype=dtype, attn_implementation="sdpa").cuda()
     model.train()

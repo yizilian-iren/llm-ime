@@ -88,6 +88,14 @@ def evaluate(model, data, pad_id, dev):
     return tot / n
 
 
+def write_progress(out, done, total, eta_s, note, status="running"):
+    """For Agent Deck's sidebar progress bar (background_task progress_file)."""
+    tmp = os.path.join(out, "progress.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump({"done": done, "total": total, "eta_s": round(eta_s), "status": status, "note": note}, f)
+    os.replace(tmp, os.path.join(out, "progress.json"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="models/Qwen3-0.6B-Base")
@@ -143,6 +151,7 @@ def main():
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
                 print(rec, flush=True)
+                write_progress(a.out, step, steps, rec["eta_h"] * 3600, f"loss {rec['loss']:.3f}")
             if step % a.eval_every == 0 or step == steps:
                 v = evaluate(model, valid, pad_id, dev)
                 log.write(json.dumps({"step": step, "valid": v}) + "\n")
@@ -152,6 +161,7 @@ def main():
             if step >= steps:
                 break
     model.to(torch.bfloat16).save_pretrained(os.path.join(a.out, "final"), safe_serialization=True)
+    write_progress(a.out, step, steps, 0, "saved final", "done")
     print("done", flush=True)
 
 

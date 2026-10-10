@@ -54,7 +54,10 @@ def main():
     opts = {}
     for o in a.opt:
         k, v = o.split("=", 1)
-        opts[k] = int(v) if v.isdigit() else v
+        try:
+            opts[k] = int(v) if v.isdigit() else float(v)
+        except ValueError:
+            opts[k] = v
     eng = engines.load(a.engine, **opts)
     items = [json.loads(line) for line in open("data/private/eval.jsonl")]
     if a.src:
