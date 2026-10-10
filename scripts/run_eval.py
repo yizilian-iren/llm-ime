@@ -94,6 +94,8 @@ def main():
 
     os.makedirs("data/private/results", exist_ok=True)
     tag = f"{a.engine}{'-' + a.tag if a.tag else ''}"
+    if a.limit or a.src:  # partial runs never overwrite a full run's results
+        tag += f"-part{a.limit or ''}{a.src}"
     with open(f"data/private/results/{tag}.jsonl", "w") as f:
         for o in out:
             f.write(json.dumps(o, ensure_ascii=False) + "\n")
