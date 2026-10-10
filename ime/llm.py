@@ -29,8 +29,9 @@ class LLMEngine:
         self.model, self.tok = load(model)
         # Fine-tuned models see the keys in the prompt (ime.fmt) and score the end of the sentence;
         # base models just continue the context.
+        self.order = fmt.model_order(model) or "ctx_first"
         if keys_in_prompt is None:
-            keys_in_prompt = os.path.exists(os.path.join(model, "ime_format"))
+            keys_in_prompt = fmt.model_order(model) is not None
         self.keys_in_prompt = bool(int(keys_in_prompt))
         self.eos = self.tok.eos_token_id
         # progress_bonus: nats credited per key consumed when ranking beams, so hypotheses that have
@@ -136,7 +137,7 @@ class LLMEngine:
         if not keys:
             return []
         if self.keys_in_prompt:
-            self._prefill(fmt.prompt(context, keys))
+            self._prefill(fmt.prompt(context, keys, self.order))
         else:
             self._prefill(context[-64:] if context.strip() else self.empty_prompt)
         n = len(keys)

@@ -4,8 +4,9 @@ From each corpus line: pick a cut point, the target is the next 2–16 Han chara
 text before it, i.e. what an IME sees left of the cursor: the same message for chat, the article so far for
 Wikipedia (dropped to empty 15% of the time). Keys: full / initials / mixed with equal weight.
 Sources: LCCC and Wikipedia ~1:1, plus the user's own WeChat messages (--private) at ~5% of samples.
-Stored pre-tokenized: ids (flat int32), offsets, prefix lengths (target starts after SEP2) and context
-lengths (the context tokens get a down-weighted LM loss in train.py).
+Stored pre-tokenized: ids (flat int32), offsets, prefix lengths (where the target starts) and the context's
+token span cstart:cend (the context tokens get a down-weighted LM loss in train.py). --order picks the
+prompt order (ime.fmt); the model's `ime_format` file must say the same.
 """
 
 import argparse
@@ -55,25 +56,34 @@ def samples(lines, seed):
 
 
 def encode(args):
-    lines, seed = args
+    lines, seed, order = args
     rows = []
     for ctx, keys, target in samples(lines, seed):
-        p = TOK.encode(fmt.prompt(ctx, keys))
+        p = TOK.encode(fmt.prompt(ctx, keys, order))
         t = TOK.encode(target) + [TOK.eos_token_id]
-        c = TOK.encode(ctx[-fmt.CTX_CHARS :]) if ctx else []
-        rows.append((p + t, len(p), len(c) if p[: len(c)] == c else 0))
+        cs = ce = 0
+        if ctx:
+            if order == "keys_first":
+                k = TOK.encode(fmt.keys_part(keys))
+                if p[: len(k)] == k:
+                    cs, ce = len(k), len(p)
+            else:
+                c = TOK.encode(ctx[-fmt.CTX_CHARS :])
+                if p[: len(c)] == c:
+                    cs, ce = 0, len(c)
+        rows.append((p + t, len(p), cs, ce))
     return rows
 
 
-def chunks(it, n=5000):
+def chunks(it, order, n=5000):
     buf, i = [], 0
     for x in it:
         buf.append(x)
         if len(buf) == n:
-            yield buf, i
+            yield buf, i, order
             buf, i = [], i + 1
     if buf:
-        yield buf, i
+        yield buf, i, order
 
 
 def source(rng, private=None):
@@ -93,8 +103,9 @@ def save(path, rows):
     lens = np.array([len(r[0]) for r in rows], dtype=np.int32)
     offsets = np.concatenate([[0], np.cumsum(lens)]).astype(np.int64)
     plen = np.array([r[1] for r in rows], dtype=np.int32)
-    clen = np.array([r[2] for r in rows], dtype=np.int32)
-    np.savez(path, ids=ids, offsets=offsets, plen=plen, clen=clen)
+    cstart = np.array([r[2] for r in rows], dtype=np.int32)
+    cend = np.array([r[3] for r in rows], dtype=np.int32)
+    np.savez(path, ids=ids, offsets=offsets, plen=plen, cstart=cstart, cend=cend)
 
 
 def main():
@@ -102,13 +113,14 @@ def main():
     ap.add_argument("--n", type=int, default=4_000_000)
     ap.add_argument("--tokenizer", default="models/Qwen3-0.6B-Base")
     ap.add_argument("--out", default="data/train")
+    ap.add_argument("--order", default="ctx_first", choices=fmt.ORDERS)
     ap.add_argument("--private", default="", help="jsonl with a 'text' field (the user's own messages)")
     a = ap.parse_args()
     private = [json.loads(x)["text"] for x in open(a.private)] if a.private else None
     rows = []
     rng = random.Random(0)
     with Pool(os.cpu_count() - 2, initializer=init, initargs=(a.tokenizer,)) as pool:
-        for r in pool.imap(encode, chunks(source(rng, private))):
+        for r in pool.imap(encode, chunks(source(rng, private), a.order)):
             rows += r
             if len(rows) // 200_000 != (len(rows) - len(r)) // 200_000:
                 print(f"  {len(rows)}", flush=True)
@@ -121,8 +133,8 @@ def main():
     toks = sum(len(r[0]) for r in rows)
     print(f"{len(rows)} samples, {toks / len(rows):.1f} tokens each")
     init(a.tokenizer)
-    for r, p, c in rows[:5]:
-        print(repr(TOK.decode(r[:c])), "|", repr(TOK.decode(r[c:p])), "→", repr(TOK.decode(r[p:])))
+    for r, p, cs, ce in rows[:5]:
+        print(repr(TOK.decode(r[:p])), "[ctx:", repr(TOK.decode(r[cs:ce])), "] →", repr(TOK.decode(r[p:])))
 
 
 if __name__ == "__main__":

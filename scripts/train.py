@@ -21,12 +21,16 @@ from transformers import AutoModelForCausalLM
 
 def load(path):
     d = np.load(path)
-    clen = d["clen"] if "clen" in d else np.zeros_like(d["plen"])
-    return d["ids"], d["offsets"], d["plen"], clen
+    if "cstart" in d:
+        cs, ce = d["cstart"], d["cend"]
+    else:  # r2 data: context first, clen tokens long
+        ce = d["clen"] if "clen" in d else np.zeros_like(d["plen"])
+        cs = np.zeros_like(ce)
+    return d["ids"], d["offsets"], d["plen"], cs, ce
 
 
 def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0):
-    ids, off, plen, clen = data
+    ids, off, plen, cstart, cend = data
     lens = np.diff(off)
     order = rng.permutation(len(lens))
     # bucket into chunks of 100 batches' worth, sort within chunk by length to limit padding
@@ -57,9 +61,10 @@ def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0):
                 att[r, : len(seq)] = 1
                 y[r, plen[i] : len(seq)] = seq[plen[i] :]
                 w[r, plen[i] : len(seq)] = 1.0
-                if ctx_weight and clen[i] > 1:
-                    y[r, 1 : clen[i]] = seq[1 : clen[i]]
-                    w[r, 1 : clen[i]] = ctx_weight
+                a, b = max(1, cstart[i]), cend[i]  # position 0 has nothing before it to predict from
+                if ctx_weight and b > a:
+                    y[r, a:b] = seq[a:b]
+                    w[r, a:b] = ctx_weight
             yield torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(att), torch.from_numpy(w)
 
 
