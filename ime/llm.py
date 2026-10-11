@@ -126,13 +126,8 @@ class LLMEngine:
         mx.eval(logits, [c.state for c in self._ctx_cache])
         self._ids, self._ctx_logits = ids, logits
 
-    def _fork_cache(self, idx):
-        """Per-beam copy of the context cache (rows idx of a batch-1 cache)."""
-        cache = make_prompt_cache(self.model)
-        for c, src in zip(cache, self._ctx_cache):
-            k, v, off = src.state  # whole preallocated buffer, so the next update doesn't reallocate
-            c.keys, c.values, c.offset = k[idx], v[idx], off
-        return cache
+    def _fork_cache(self, idx, steps):
+        return _fork(self.model, self._ctx_cache, idx, steps)
 
     @staticmethod
     def _reorder(cache, idx):
@@ -213,13 +208,13 @@ class LLMEngine:
                 break
             idx = mx.array(parents)
             if cache is None:
-                cache = self._fork_cache(idx)
+                cache = self._fork_cache(idx, n + 2)
             else:
                 self._reorder(cache, idx)
             t0 = time.perf_counter()
             logits = self.model(mx.array(tids)[:, None], cache=cache)[:, -1, :]
             if self.mix and mix_w:
-                mix_cache = self.mix.fork(idx) if mix_cache is None else (self._reorder(mix_cache, idx) or mix_cache)
+                mix_cache = self.mix.fork(idx, n + 2) if mix_cache is None else (self._reorder(mix_cache, idx) or mix_cache)
                 mix_logits = self.mix.model(mx.array(tids)[:, None], cache=mix_cache)[:, -1, :]
                 mx.eval(mix_logits)
             mx.eval(logits)
@@ -258,9 +253,21 @@ class _Cached:
         mx.eval(self.ctx_logits, [c.state for c in self.cache])
         self.ids = ids
 
-    def fork(self, idx):
-        cache = make_prompt_cache(self.model)
-        for c, src in zip(cache, self.cache):
-            k, v, off = src.state
-            c.keys, c.values, c.offset = k[idx], v[idx], off
-        return cache
+    def fork(self, idx, steps):
+        return _fork(self.model, self.cache, idx, steps)
+
+
+def _fork(model, ctx_cache, idx, steps):
+    """Per-beam copy (rows idx) of a batch-1 context cache, sized for `steps` more tokens: every beam
+    reorder copies the whole buffer, so it must not carry the default 256-slot preallocation."""
+    cache = make_prompt_cache(model)
+    for c, src in zip(cache, ctx_cache):
+        k, v = src.keys, src.values
+        off, cap = src.offset, src.offset + steps
+        if k.shape[2] >= cap:
+            k, v = k[..., :cap, :], v[..., :cap, :]
+        else:
+            pad = [(0, 0), (0, 0), (0, cap - k.shape[2]), (0, 0)]
+            k, v = mx.pad(k, pad), mx.pad(v, pad)
+        c.keys, c.values, c.offset = k[idx], v[idx], off
+    return cache
