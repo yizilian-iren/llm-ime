@@ -3,7 +3,14 @@
 Batches are built by token budget from length-sorted buckets, right-padded. Loss on target tokens, plus the
 context tokens at --ctx-weight (plain LM loss, so the model keeps its language ability); valid is target-only.
 
+Distillation (--teacher, r4): on the target tokens, also a KL term to what the engine's mixed scoring would
+give: log p_teacher(sees the keys) + w * log p_mix(base model, sees only the context and the target, as in
+ime.llm), with w = --mix-weight (--mix-weight-empty with no context), end of sentence from the teacher only,
+renormalised. The mix model's input is rebuilt from the sample: its context tokens (or "\n") + the target.
+
   .venv-train/bin/python scripts/train.py --out runs/r1 [--max-steps 200]
+  .venv-train/bin/python scripts/train.py --model runs/r2/final --teacher runs/r2/final \
+      --mix models/Qwen3-0.6B-Base --distill 1.0 --out runs/r4 --ckpt
 """
 
 import argparse
@@ -29,7 +36,8 @@ def load(path):
     return d["ids"], d["offsets"], d["plen"], cs, ce
 
 
-def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0):
+def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None):
+    """mix_input: (newline token id, w with context, w without) to also build the mix model's input."""
     ids, off, plen, cstart, cend = data
     lens = np.diff(off)
     order = rng.permutation(len(lens))
@@ -65,13 +73,46 @@ def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0):
                 if ctx_weight and b > a:
                     y[r, a:b] = seq[a:b]
                     w[r, a:b] = ctx_weight
-            yield torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(att), torch.from_numpy(w)
+            batch = [torch.from_numpy(a) for a in (x, y, att, w)]
+            if mix_input:
+                batch.append(_mix_batch(ids, off, plen, cstart, cend, g, pad_id, *mix_input))
+            yield batch
 
 
-def loss_fn(model, x, y, att, w):
+def _mix_batch(ids, off, plen, cstart, cend, g, pad_id, nl_id, w_ctx, w_empty):
+    """The mix model's input for rows g: context tokens (or a newline) + target, and for both inputs the
+    positions that predict a target token (same count per row, so the flattened orders line up)."""
+    seqs, tpos, bpos, wm = [], [], [], []
+    for i in g:
+        seq = ids[off[i] : off[i + 1]]
+        p, cs, ce = int(plen[i]), int(cstart[i]), int(cend[i])
+        ctx = list(seq[cs:ce]) if ce > cs else [nl_id]
+        seqs.append(ctx + list(seq[p:]))
+        n_t = len(seq) - p
+        tpos.append(range(p - 1, p - 1 + n_t))
+        bpos.append(range(len(ctx) - 1, len(ctx) - 1 + n_t))
+        wm.append(w_ctx if ce > cs else w_empty)
+    T = max(len(q) for q in seqs)
+    xb = np.full((len(g), T), pad_id, dtype=np.int64)
+    attb = np.zeros((len(g), T), dtype=np.int64)
+    bmask = np.zeros((len(g), T), dtype=bool)
+    tmask = np.zeros((len(g), int(max(off[i + 1] - off[i] for i in g))), dtype=bool)
+    wrow = np.zeros(len(g), dtype=np.float32)
+    for r, q in enumerate(seqs):
+        xb[r, : len(q)] = q
+        attb[r, : len(q)] = 1
+        bmask[r, list(bpos[r])] = True
+        tmask[r, list(tpos[r])] = True
+        wrow[r] = wm[r]
+    wpos = np.repeat(wrow, tmask.sum(1))  # mix weight per target position, in flattened order
+    return [torch.from_numpy(a) for a in (xb, attb, tmask, bmask, wpos)]
+
+
+def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos_id=None):
     # Only target positions go through lm_head: full-vocab logits for every token would be tens of GB.
     # Chunked so the (targets x 151k vocab) logits never exist all at once.
-    h = model.model(input_ids=x, attention_mask=att).last_hidden_state[:, :-1]
+    hs = model.model(input_ids=x, attention_mask=att).last_hidden_state
+    h = hs[:, :-1]
     tgt = y[:, 1:]
     mask = tgt != -100
     h, tgt, w = h[mask], tgt[mask], w[:, 1:][mask]
@@ -79,11 +120,35 @@ def loss_fn(model, x, y, att, w):
     for i in range(0, len(tgt), 2048):
         total = total + torch.utils.checkpoint.checkpoint(_ce_chunk, model.lm_head, h[i : i + 2048], tgt[i : i + 2048],
                                                           w[i : i + 2048], use_reentrant=False)
-    return total / w.sum()
+    loss = total / w.sum()
+    if not distill:
+        return loss, None
+    xb, attb, tmask, bmask, wpos = mix_batch
+    teacher, mix = teachers
+    hs_t = hs[:, : tmask.shape[1]][tmask]  # student, at the positions predicting target tokens
+    with torch.no_grad():
+        ht = teacher.model(input_ids=x, attention_mask=att).last_hidden_state[:, : tmask.shape[1]][tmask]
+        hb = mix.model(input_ids=xb, attention_mask=attb).last_hidden_state[bmask]
+    kl = 0.0
+    for i in range(0, len(hs_t), 512):
+        with torch.no_grad():
+            lt = teacher.lm_head(ht[i : i + 512]).float().log_softmax(-1)
+            comb = lt + wpos[i : i + 512, None] * mix.lm_head(hb[i : i + 512]).float().log_softmax(-1)
+            comb[:, eos_id] = lt[:, eos_id]
+            logq = comb.log_softmax(-1)
+            del lt, comb
+        kl = kl + torch.utils.checkpoint.checkpoint(_kl_chunk, model.lm_head, hs_t[i : i + 512], logq,
+                                                    use_reentrant=False)
+    kl = kl / len(hs_t)
+    return loss + distill * kl, kl
 
 
 def _ce_chunk(head, h, t, w):
     return (F.cross_entropy(head(h).float(), t, reduction="none") * w).sum()
+
+
+def _kl_chunk(head, h, logq):
+    return (logq.exp() * (logq - head(h).float().log_softmax(-1))).sum()
 
 
 @torch.no_grad()
@@ -92,7 +157,7 @@ def evaluate(model, data, pad_id, dev):
     tot, n = 0.0, 0
     for x, y, att, w in batches(data, 16384, np.random.default_rng(0), pad_id):
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = loss_fn(model, x.to(dev), y.to(dev), att.to(dev), w.to(dev))
+            loss, _ = loss_fn(model, x.to(dev), y.to(dev), att.to(dev), w.to(dev))
         k = int((y[:, 1:] != -100).sum())
         tot += float(loss) * k
         n += k
@@ -122,6 +187,11 @@ def main():
     ap.add_argument("--max-steps", type=int, default=0)
     ap.add_argument("--warmup", type=int, default=300)
     ap.add_argument("--eval-every", type=int, default=1000)
+    ap.add_argument("--teacher", default="", help="distil from this model (sees the keys) mixed with --mix")
+    ap.add_argument("--mix", default="", help="the base model mixed into the teacher's scores")
+    ap.add_argument("--mix-weight", type=float, default=1.0)
+    ap.add_argument("--mix-weight-empty", type=float, default=0.5)
+    ap.add_argument("--distill", type=float, default=1.0, help="weight of the KL term (with --teacher)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     dev = "cuda"
@@ -134,6 +204,17 @@ def main():
     if a.ckpt:
         model.gradient_checkpointing_enable()
     pad_id = model.config.eos_token_id
+    teachers, mix_input, distill = None, None, 0.0
+    if a.teacher:
+        from transformers import AutoTokenizer
+
+        teachers = [AutoModelForCausalLM.from_pretrained(m, dtype=torch.bfloat16, attn_implementation="sdpa").to(dev).eval()
+                    for m in (a.teacher, a.mix)]
+        for t in teachers:
+            t.requires_grad_(False)
+        nl = AutoTokenizer.from_pretrained(a.mix).encode("\n")
+        assert len(nl) == 1, nl
+        mix_input, distill = (nl[0], a.mix_weight, a.mix_weight_empty), a.distill
     train, valid = load(f"{a.data}/train.npz"), load(f"{a.data}/valid.npz")
     n_tok = int(train[1][-1])
     steps = a.max_steps or int(a.epochs * n_tok / (a.tokens * 0.8))
@@ -147,10 +228,11 @@ def main():
     step, t0, seen = 0, time.time(), 0
     print(f"step 0 valid {evaluate(model, valid, pad_id, dev):.4f}", flush=True)
     while step < steps:
-        for x, y, att, w in batches(train, a.tokens, rng, pad_id, a.ctx_weight):
+        for x, y, att, w, *mb in batches(train, a.tokens, rng, pad_id, a.ctx_weight, mix_input):
             x, y, att, w = x.to(dev), y.to(dev), att.to(dev), w.to(dev)
+            mb = [t.to(dev) for t in mb[0]] if mb else None
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss = loss_fn(model, x, y, att, w)
+                loss, kl = loss_fn(model, x, y, att, w, mb, teachers, distill, pad_id)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -160,7 +242,8 @@ def main():
             seen += int(att.sum())
             if step % 50 == 0:
                 rate = seen / (time.time() - t0)
-                rec = {"step": step, "loss": float(loss), "lr": sched.get_last_lr()[0], "tok_s": round(rate),
+                rec = {"step": step, "loss": float(loss), **({"kl": round(float(kl), 4)} if kl is not None else {}),
+                       "lr": sched.get_last_lr()[0], "tok_s": round(rate),
                        "eta_h": round((steps - step) * a.tokens * 0.8 / rate / 3600, 2)}
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
