@@ -3,6 +3,9 @@
 Every vocab token made only of Han characters is indexed in a trie by its characters' readings
 (same matching rule as the n-gram engine: each character consumes a non-empty prefix of a reading).
 Beam search runs all beams as one batch, one token per step, reusing the prefilled context cache.
+Optionally a second model (`mix`, e.g. the base model next to a fine-tuned one) scores the same beams
+from the plain context; its log-probs are added with weight `mix_weight` (the end-of-sentence score
+stays the first model's).
 """
 
 import itertools
@@ -25,8 +28,12 @@ class LLMEngine:
     name = "llm"
 
     def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
-                 empty_prompt="\n", keys_in_prompt=None):
+                 empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None):
         self.model, self.tok = load(model)
+        self.mix = _Cached(load(mix)[0]) if mix else None
+        # With no context the mixed-in model is only guessing: it gets its own (usually smaller) weight.
+        self.mix_weight = mix_weight
+        self.mix_weight_empty = mix_weight if mix_weight_empty is None else mix_weight_empty
         # Fine-tuned models see the keys in the prompt (ime.fmt) and score the end of the sentence;
         # base models just continue the context.
         self.order = fmt.model_order(model) or "ctx_first"
@@ -136,10 +143,13 @@ class LLMEngine:
     def convert(self, context, keys, k=5):
         if not keys:
             return []
+        plain = context[-64:] if context.strip() else self.empty_prompt
         if self.keys_in_prompt:
             self._prefill(fmt.prompt(context, keys, self.order))
         else:
-            self._prefill(context[-64:] if context.strip() else self.empty_prompt)
+            self._prefill(plain)
+        if self.mix:
+            self.mix.prefill(self.tok.encode(plain))
         n = len(keys)
         # feasible[p]: keys[p:] can be split into reading prefixes (else that hypothesis is a dead end)
         feasible = [False] * n + [True]
@@ -157,12 +167,19 @@ class LLMEngine:
             return edge_cache[p]
 
         logits = self._ctx_logits
+        mix_logits = self.mix.ctx_logits if self.mix else None
+        mix_w = self.mix_weight if context.strip() else self.mix_weight_empty
         active = [(0.0, "", 0)]  # (score, text, key position)
-        cache = None
+        cache = mix_cache = None
         finished = []
         for _step in range(n + 1):
             lp = (logits - mx.logsumexp(logits, axis=-1, keepdims=True)).astype(mx.float32)
             lp = np.array(lp)
+            if self.mix and mix_w:
+                mlp = np.array((mix_logits - mx.logsumexp(mix_logits, axis=-1, keepdims=True)).astype(mx.float32))
+                eos_lp = lp[:, self.eos].copy()
+                lp = lp + mix_w * mlp
+                lp[:, self.eos] = eos_lp
             cand_s, cand_parent, cand_tid, cand_end = [], [], [], []
             for b, (score, text, p) in enumerate(active):
                 if p == n:  # all keys consumed, waiting for its end-of-sentence score
@@ -201,6 +218,10 @@ class LLMEngine:
                 self._reorder(cache, idx)
             t0 = time.perf_counter()
             logits = self.model(mx.array(tids)[:, None], cache=cache)[:, -1, :]
+            if self.mix and mix_w:
+                mix_cache = self.mix.fork(idx) if mix_cache is None else (self._reorder(mix_cache, idx) or mix_cache)
+                mix_logits = self.mix.model(mx.array(tids)[:, None], cache=mix_cache)[:, -1, :]
+                mx.eval(mix_logits)
             mx.eval(logits)
             self.stats["forward_ms"] += (time.perf_counter() - t0) * 1000
             self.stats["calls"] += 1
@@ -211,3 +232,35 @@ class LLMEngine:
                 seen.add(t)
                 out.append(t)
         return out[:k]
+
+
+class _Cached:
+    """A second model's batch-1 context cache, kept like LLMEngine's own (_prefill / _fork_cache)."""
+
+    def __init__(self, model):
+        self.model, self.ids, self.cache, self.ctx_logits = model, [], None, None
+
+    def prefill(self, ids):
+        if ids == self.ids:
+            return
+        common = 0
+        for a, b in zip(ids, self.ids):
+            if a != b:
+                break
+            common += 1
+        common = min(common, len(ids) - 1)
+        if self.cache is None or common == 0:
+            self.cache, common = make_prompt_cache(self.model), 0
+        else:
+            for c in self.cache:
+                c.trim(c.offset - common)
+        self.ctx_logits = self.model(mx.array(ids[common:])[None], cache=self.cache)[:, -1, :]
+        mx.eval(self.ctx_logits, [c.state for c in self.cache])
+        self.ids = ids
+
+    def fork(self, idx):
+        cache = make_prompt_cache(self.model)
+        for c, src in zip(cache, self.cache):
+            k, v, off = src.state
+            c.keys, c.values, c.offset = k[idx], v[idx], off
+        return cache
