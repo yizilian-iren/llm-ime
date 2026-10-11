@@ -168,22 +168,30 @@ class LLMEngine:
         cache = mix_cache = None
         finished = []
         for _step in range(n + 1):
-            lp = (logits - mx.logsumexp(logits, axis=-1, keepdims=True)).astype(mx.float32)
-            lp = np.array(lp)
+            # Only the columns this step can use (the tokens that fit at the beams' key positions, and EOS)
+            # leave the GPU: copying the whole vocab per beam cost more than the forward.
+            pos = {p for _s, _t, p in active if p < n}
+            cols = np.unique(np.concatenate([edges_at(p)[1] for p in pos] + [np.array([self.eos], np.int32)]))
+            col_of = lambda t: np.searchsorted(cols, t)  # noqa: E731
+            lp = _log_softmax_cols(logits, mx.array(cols))
             if self.mix and mix_w:
-                mlp = np.array((mix_logits - mx.logsumexp(mix_logits, axis=-1, keepdims=True)).astype(mx.float32))
-                eos_lp = lp[:, self.eos].copy()
+                mlp = _log_softmax_cols(mix_logits, mx.array(cols))
+                mx.eval(lp, mlp)
+                lp, mlp = np.array(lp), np.array(mlp)
+                eos_lp = lp[:, col_of(self.eos)].copy()
                 lp = lp + mix_w * mlp
-                lp[:, self.eos] = eos_lp
+                lp[:, col_of(self.eos)] = eos_lp
+            else:
+                lp = np.array(lp)
             cand_s, cand_parent, cand_tid, cand_end = [], [], [], []
             for b, (score, text, p) in enumerate(active):
                 if p == n:  # all keys consumed, waiting for its end-of-sentence score
-                    finished.append((score + float(lp[b, self.eos]), text))
+                    finished.append((score + float(lp[b, col_of(self.eos)]), text))
                     continue
                 ends, tids, abs_ = edges_at(p)
                 if len(tids) == 0:
                     continue
-                cand_s.append(score + lp[b, tids] - self.alpha * abs_)
+                cand_s.append(score + lp[b, col_of(tids)] - self.alpha * abs_)
                 cand_parent.append(np.full(len(tids), b))
                 cand_tid.append(tids)
                 cand_end.append(ends)
@@ -216,8 +224,9 @@ class LLMEngine:
             if self.mix and mix_w:
                 mix_cache = self.mix.fork(idx, n + 2) if mix_cache is None else (self._reorder(mix_cache, idx) or mix_cache)
                 mix_logits = self.mix.model(mx.array(tids)[:, None], cache=mix_cache)[:, -1, :]
-                mx.eval(mix_logits)
-            mx.eval(logits)
+                mx.eval(logits, mix_logits)
+            else:
+                mx.eval(logits)
             self.stats["forward_ms"] += (time.perf_counter() - t0) * 1000
             self.stats["calls"] += 1
             active = nxt
@@ -227,6 +236,11 @@ class LLMEngine:
                 seen.add(t)
                 out.append(t)
         return out[:k]
+
+
+def _log_softmax_cols(logits, cols):
+    """log_softmax(logits)[:, cols] as float32, computed as the whole-vocab version was (same rounding)."""
+    return (logits[:, cols] - mx.logsumexp(logits, axis=-1, keepdims=True)).astype(mx.float32)
 
 
 class _Cached:
