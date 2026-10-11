@@ -1,7 +1,7 @@
 """Try the engines by hand.
 
-  make repl                       # both engines
-  make repl ARGS="--engines llm"
+  make repl                       # v0.2's engine (r2 + base model)
+  make repl ARGS="--engines v02,llm,ngram"
 
 Type keys (e.g. hyhdddsgbbkxwjzywhf) and press Enter to see each engine's candidates.
   1-5      commit that candidate of the first engine into the context
@@ -20,7 +20,7 @@ from ime import engine as engines  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engines", default="ngram,llm")
+    ap.add_argument("--engines", default="v02")
     a = ap.parse_args()
     engs = []
     for name in a.engines.split(","):
