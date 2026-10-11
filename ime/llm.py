@@ -135,15 +135,28 @@ class LLMEngine:
             c.keys = c.keys[idx]
             c.values = c.values[idx]
 
-    def convert(self, context, keys, k=5):
+    def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True):
+        """Candidates for `keys`, best first; their token paths are left in `self.paths` (text -> path).
+
+        beam: overrides the beam width. mix: False skips the mixed-in model.
+        prefix: a path [(token_id, key_end), ...] to start from instead of the empty sentence (fed in one
+          forward per model); for the quick first guess, the previous keystroke's best candidate minus its
+          last token.
+        stop: called between beam steps; when it returns True the search is dropped and None returned.
+        eos: False finishes a hypothesis as soon as it has consumed all keys, without the extra step that
+          scores the end of the sentence (fine-tuned models only; base models never score it).
+        """
+        self.paths = {}
         if not keys:
             return []
+        beam = beam or self.beam
+        mix = bool(self.mix) and mix
         plain = context[-64:] if context.strip() else self.empty_prompt
         if self.keys_in_prompt:
             self._prefill(fmt.prompt(context, keys, self.order))
         else:
             self._prefill(plain)
-        if self.mix:
+        if mix:
             self.mix.prefill(self.tok.encode(plain))
         n = len(keys)
         # feasible[p]: keys[p:] can be split into reading prefixes (else that hypothesis is a dead end)
@@ -162,19 +175,30 @@ class LLMEngine:
             return edge_cache[p]
 
         logits = self._ctx_logits
-        mix_logits = self.mix.ctx_logits if self.mix else None
-        mix_w = self.mix_weight if context.strip() else self.mix_weight_empty
-        active = [(0.0, "", 0)]  # (score, text, key position)
+        mix_logits = self.mix.ctx_logits if mix else None
+        mix_w = (self.mix_weight if context.strip() else self.mix_weight_empty) if mix else 0
+        active = [(0.0, "", 0, ())]  # (score, text, key position, path)
         cache = mix_cache = None
+        if prefix and prefix[-1][1] <= n and feasible[prefix[-1][1]]:
+            path = tuple(prefix)
+            cache = self._fork_cache(mx.array([0]), len(path) + n + 2)
+            ptoks = mx.array([t for t, _e in path])[None]
+            logits = self.model(ptoks, cache=cache)[:, -1, :]
+            if mix_w:
+                mix_cache = self.mix.fork(mx.array([0]), len(path) + n + 2)
+                mix_logits = self.mix.model(ptoks, cache=mix_cache)[:, -1, :]
+            active = [(0.0, "".join(self.tok_text[t] for t, _e in path), path[-1][1], path)]
         finished = []
         for _step in range(n + 1):
+            if stop and stop():
+                return None
             # Only the columns this step can use (the tokens that fit at the beams' key positions, and EOS)
             # leave the GPU: copying the whole vocab per beam cost more than the forward.
-            pos = {p for _s, _t, p in active if p < n}
+            pos = {p for _s, _t, p, _path in active if p < n}
             cols = np.unique(np.concatenate([edges_at(p)[1] for p in pos] + [np.array([self.eos], np.int32)]))
             col_of = lambda t: np.searchsorted(cols, t)  # noqa: E731
             lp = _log_softmax_cols(logits, mx.array(cols))
-            if self.mix and mix_w:
+            if mix_w:
                 mlp = _log_softmax_cols(mix_logits, mx.array(cols))
                 mx.eval(lp, mlp)
                 lp, mlp = np.array(lp), np.array(mlp)
@@ -184,9 +208,9 @@ class LLMEngine:
             else:
                 lp = np.array(lp)
             cand_s, cand_parent, cand_tid, cand_end = [], [], [], []
-            for b, (score, text, p) in enumerate(active):
+            for b, (score, text, p, path) in enumerate(active):
                 if p == n:  # all keys consumed, waiting for its end-of-sentence score
-                    finished.append((score + float(lp[b, col_of(self.eos)]), text))
+                    finished.append((score + float(lp[b, col_of(self.eos)]), text, path))
                     continue
                 ends, tids, abs_ = edges_at(p)
                 if len(tids) == 0:
@@ -203,13 +227,14 @@ class LLMEngine:
             nxt, parents, tids = [], [], []
             for j in order:
                 text = active[P[j]][1] + self.tok_text[int(T[j])]
-                if E[j] == n and not self.keys_in_prompt:
-                    finished.append((float(S[j]), text))
-                elif len(nxt) < self.beam:
-                    nxt.append((float(S[j]), text, int(E[j])))
+                path = active[P[j]][3] + ((int(T[j]), int(E[j])),)
+                if E[j] == n and not (self.keys_in_prompt and eos):
+                    finished.append((float(S[j]), text, path))
+                elif len(nxt) < beam:
+                    nxt.append((float(S[j]), text, int(E[j]), path))
                     parents.append(int(P[j]))
                     tids.append(int(T[j]))
-                if len(nxt) >= self.beam and len(finished) >= k * 3:
+                if len(nxt) >= beam and len(finished) >= k * 3:
                     break
             finished.sort(reverse=True)
             if not nxt or (len(finished) >= k and finished[k - 1][0] >= max(h[0] for h in nxt)):
@@ -221,7 +246,7 @@ class LLMEngine:
                 self._reorder(cache, idx)
             t0 = time.perf_counter()
             logits = self.model(mx.array(tids)[:, None], cache=cache)[:, -1, :]
-            if self.mix and mix_w:
+            if mix_w:
                 mix_cache = self.mix.fork(idx, n + 2) if mix_cache is None else (self._reorder(mix_cache, idx) or mix_cache)
                 mix_logits = self.mix.model(mx.array(tids)[:, None], cache=mix_cache)[:, -1, :]
                 mx.eval(logits, mix_logits)
@@ -230,10 +255,10 @@ class LLMEngine:
             self.stats["forward_ms"] += (time.perf_counter() - t0) * 1000
             self.stats["calls"] += 1
             active = nxt
-        out, seen = [], set()
-        for _s, t in sorted(finished, reverse=True):
-            if t not in seen:
-                seen.add(t)
+        out = []
+        for _s, t, path in sorted(finished, reverse=True):
+            if t not in self.paths:
+                self.paths[t] = path
                 out.append(t)
         return out[:k]
 
