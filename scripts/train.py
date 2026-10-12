@@ -38,8 +38,9 @@ def load(path):
     return d["ids"], d["offsets"], d["plen"], cs, ce, keyids
 
 
-def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None):
-    """mix_input: (newline token id, w with context, w without) to also build the mix model's input."""
+def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None, key_weight=0.0):
+    """mix_input: (newline token id, w with context, w without) to also build the mix model's input.
+    key_weight: interleave data's letters in the target span get this weight (0 = no loss on them)."""
     ids, off, plen, cstart, cend, keyids = data
     lens = np.diff(off)
     order = rng.permutation(len(lens))
@@ -73,7 +74,10 @@ def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None)
                 w[r, plen[i] : len(seq)] = 1.0
                 if keyids is not None:
                     k = plen[i] + np.flatnonzero(np.isin(seq[plen[i] :], keyids))
-                    y[r, k], w[r, k] = -100, 0.0
+                    if key_weight:
+                        w[r, k] = key_weight
+                    else:
+                        y[r, k], w[r, k] = -100, 0.0
                 a, b = max(1, cstart[i]), cend[i]  # position 0 has nothing before it to predict from
                 if ctx_weight and b > a:
                     y[r, a:b] = seq[a:b]
@@ -198,6 +202,8 @@ def main():
     ap.add_argument("--mix-weight", type=float, default=1.0)
     ap.add_argument("--mix-weight-empty", type=float, default=0.5)
     ap.add_argument("--distill", type=float, default=1.0, help="weight of the KL term (with --teacher)")
+    ap.add_argument("--key-weight", type=float, default=0.0,
+                    help="interleave data: loss weight on the letters, so the model scores keys too (r4b2: 1.0)")
     ap.add_argument("--ce", type=float, default=1.0, help="weight of the plain loss when distilling (r4a2: 0.2)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -236,7 +242,7 @@ def main():
     step, t0, seen = 0, time.time(), 0
     print(f"step 0 valid {evaluate(model, valid, pad_id, dev):.4f}", flush=True)
     while step < steps:
-        for x, y, att, w, *mb in batches(train, a.tokens, rng, pad_id, a.ctx_weight, mix_input):
+        for x, y, att, w, *mb in batches(train, a.tokens, rng, pad_id, a.ctx_weight, mix_input, a.key_weight):
             x, y, att, w = x.to(dev), y.to(dev), att.to(dev), w.to(dev)
             mb = [t.to(dev) for t in mb[0]] if mb else None
             with torch.autocast("cuda", dtype=torch.bfloat16):

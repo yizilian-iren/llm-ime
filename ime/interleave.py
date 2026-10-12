@@ -6,6 +6,8 @@ and its next token is forced: the next key; or after a key, and then it may take
 since its last character are still the prefix of a reading) and/or pick a character whose reading starts with
 those keys, scored by the model's log-prob there (minus abbrev_penalty when the keys are not the whole reading).
 Only character picks compete for the beam; ranking adds progress_bonus per key consumed, as in ime.llm.
+key_lp: weight of the model's log-prob of each key it is fed (a model trained with --key-weight scores the
+keys too, so a reading split wrongly, or a character that the following keys do not fit, costs there).
 Characters are single tokens; the rare ones that are not are never offered.
 
 Not incremental yet: every call searches the whole key string again (r4b's first step is to measure accuracy).
@@ -26,9 +28,9 @@ from ime.ngram import char_readings_table
 class InterleaveEngine:
     name = "llm"
 
-    def __init__(self, model, beam=12, abbrev_penalty=1.0, progress_bonus=3.0, **_ignored):
+    def __init__(self, model, beam=12, abbrev_penalty=1.0, progress_bonus=3.0, key_lp=1.0, **_ignored):
         self.model, self.tok = load(model)
-        self.beam, self.alpha, self.beta = beam, abbrev_penalty, progress_bonus
+        self.beam, self.alpha, self.beta, self.gamma = beam, abbrev_penalty, progress_bonus, float(key_lp)
         self.eos = self.tok.eos_token_id
         self.letter = {c: self.tok.encode(c)[0] for c in "abcdefghijklmnopqrstuvwxyz"}
         # reading prefix -> (token ids of the characters with a reading starting with it, 1 where not whole)
@@ -87,8 +89,10 @@ class InterleaveEngine:
                 return None
             segs = {keys[s:q] for _sc, _t, s, q, ak in active if ak and feasible[q]}
             lp = col = None
-            if segs or any(not ak and q == n for *_x, q, ak in active):
-                cols = np.unique(np.concatenate([self.cands[g][0] for g in segs] + [np.array([self.eos], np.int32)]))
+            if logits is not None:  # the first step's only hypothesis takes the first key: nothing to compare
+                extra = np.array([self.eos] + ([self.letter[c] for c in set(keys) if c in self.letter]
+                                               if self.gamma else []), np.int32)
+                cols = np.unique(np.concatenate([self.cands[g][0] for g in segs] + [extra]))
                 col = lambda t: np.searchsorted(cols, t)  # noqa: E731
                 lp = np.array(_log_softmax_cols(logits, mx.array(cols)))
             feed, parents, nxt = [], [], []
@@ -98,14 +102,16 @@ class InterleaveEngine:
                     if q == n:
                         finished.append((score + float(lp[b, col(self.eos)]), text))
                     elif keys[q] in self.cands:
-                        feed.append(self.letter[keys[q]]), parents.append(b), nxt.append((score, text, q, q + 1, True))
+                        sk = score + (self.gamma * float(lp[b, col(self.letter[keys[q]])]) if lp is not None and self.gamma else 0.0)
+                        feed.append(self.letter[keys[q]]), parents.append(b), nxt.append((sk, text, q, q + 1, True))
                     continue
                 if feasible[q]:
                     ids, ab = self.cands[keys[s:q]]
                     sc = score + lp[b, col(ids)] - self.alpha * ab
                     picks += [(x + self.beta * q, x, b, int(t), q) for x, t in zip(sc, ids)]
                 if q < n and keys[s : q + 1] in self.cands:
-                    feed.append(self.letter[keys[q]]), parents.append(b), nxt.append((score, text, s, q + 1, True))
+                    sk = score + (self.gamma * float(lp[b, col(self.letter[keys[q]])]) if self.gamma else 0.0)
+                    feed.append(self.letter[keys[q]]), parents.append(b), nxt.append((sk, text, s, q + 1, True))
             picks.sort(key=lambda x: -x[0])
             for _r, sc, b, t, q in picks[:beam]:
                 text = active[b][1] + self.text[t]
