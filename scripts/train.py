@@ -11,6 +11,7 @@ renormalised. The mix model's input is rebuilt from the sample: its context toke
   .venv-train/bin/python scripts/train.py --out runs/r1 [--max-steps 200]
   .venv-train/bin/python scripts/train.py --model runs/r2/final --teacher runs/r2/final \
       --mix models/Qwen3-0.6B-Base --distill 1.0 --out runs/r4 --ckpt
+  r4a2: --model runs/r4/final --ce 0.2 --lr 3e-5 (the plain loss at full weight pulled r4 back towards r2)
 """
 
 import argparse
@@ -108,7 +109,7 @@ def _mix_batch(ids, off, plen, cstart, cend, g, pad_id, nl_id, w_ctx, w_empty):
     return [torch.from_numpy(a) for a in (xb, attb, tmask, bmask, wpos)]
 
 
-def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos_id=None):
+def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos_id=None, ce=1.0):
     # Only target positions go through lm_head: full-vocab logits for every token would be tens of GB.
     # Chunked so the (targets x 151k vocab) logits never exist all at once.
     hs = model.model(input_ids=x, attention_mask=att).last_hidden_state
@@ -123,6 +124,7 @@ def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos
     loss = total / w.sum()
     if not distill:
         return loss, None
+    loss = ce * loss
     xb, attb, tmask, bmask, wpos = mix_batch
     teacher, mix = teachers
     hs_t = hs[:, : tmask.shape[1]][tmask]  # student, at the positions predicting target tokens
@@ -192,6 +194,7 @@ def main():
     ap.add_argument("--mix-weight", type=float, default=1.0)
     ap.add_argument("--mix-weight-empty", type=float, default=0.5)
     ap.add_argument("--distill", type=float, default=1.0, help="weight of the KL term (with --teacher)")
+    ap.add_argument("--ce", type=float, default=1.0, help="weight of the plain loss when distilling (r4a2: 0.2)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     dev = "cuda"
@@ -232,7 +235,7 @@ def main():
             x, y, att, w = x.to(dev), y.to(dev), att.to(dev), w.to(dev)
             mb = [t.to(dev) for t in mb[0]] if mb else None
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss, kl = loss_fn(model, x, y, att, w, mb, teachers, distill, pad_id)
+                loss, kl = loss_fn(model, x, y, att, w, mb, teachers, distill, pad_id, a.ce)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
