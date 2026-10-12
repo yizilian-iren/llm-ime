@@ -50,15 +50,21 @@ def samples(lines, seed):
         ctx = "" if rng.random() < 0.15 else (before + line[:start])[-fmt.CTX_CHARS :]
         s = pinyin.syllables(target)
         form = rng.random()
-        keys = pinyin.full(s) if form < 1 / 3 else pinyin.initials(s) if form < 2 / 3 else pinyin.mixed(s, rng)
-        out.append((ctx, keys, target))
+        pieces = s if form < 1 / 3 else [x[0] for x in s] if form < 2 / 3 else pinyin.mixed_parts(s, rng)
+        out.append((ctx, "".join(pieces), target, pieces))
     return out
 
 
 def encode(args):
     lines, seed, order = args
     rows = []
-    for ctx, keys, target in samples(lines, seed):
+    for ctx, keys, target, pieces in samples(lines, seed):
+        if order == "interleave":
+            if any(len(TOK.encode(ch)) != 1 for ch in target):  # rare characters: not one token each
+                continue
+            ids, p = fmt.interleave(TOK.encode, ctx, pieces, target)
+            rows.append((ids + [TOK.eos_token_id], p, 0, p - len(TOK.encode(fmt.SEP1))))
+            continue
         p = TOK.encode(fmt.prompt(ctx, keys, order))
         t = TOK.encode(target) + [TOK.eos_token_id]
         cs = ce = 0
@@ -98,14 +104,15 @@ def source(rng, private=None):
             yield "", rng.choice(private)
 
 
-def save(path, rows):
+def save(path, rows, keyids=None):
     ids = np.concatenate([np.array(r[0], dtype=np.int32) for r in rows])
     lens = np.array([len(r[0]) for r in rows], dtype=np.int32)
     offsets = np.concatenate([[0], np.cumsum(lens)]).astype(np.int64)
     plen = np.array([r[1] for r in rows], dtype=np.int32)
     cstart = np.array([r[2] for r in rows], dtype=np.int32)
     cend = np.array([r[3] for r in rows], dtype=np.int32)
-    np.savez(path, ids=ids, offsets=offsets, plen=plen, cstart=cstart, cend=cend)
+    extra = {} if keyids is None else {"keyids": np.array(keyids, dtype=np.int32)}
+    np.savez(path, ids=ids, offsets=offsets, plen=plen, cstart=cstart, cend=cend, **extra)
 
 
 def main():
@@ -128,11 +135,13 @@ def main():
                 break
     rng.shuffle(rows)
     os.makedirs(a.out, exist_ok=True)
-    save(f"{a.out}/valid.npz", rows[:5000])
-    save(f"{a.out}/train.npz", rows[5000 : a.n])
+    init(a.tokenizer)
+    # interleave: the key tokens inside the target span (the letters) get no loss in train.py
+    keyids = [TOK.encode(c)[0] for c in "abcdefghijklmnopqrstuvwxyz"] if a.order == "interleave" else None
+    save(f"{a.out}/valid.npz", rows[:5000], keyids)
+    save(f"{a.out}/train.npz", rows[5000 : a.n], keyids)
     toks = sum(len(r[0]) for r in rows)
     print(f"{len(rows)} samples, {toks / len(rows):.1f} tokens each")
-    init(a.tokenizer)
     for r, p, cs, ce in rows[:5]:
         print(repr(TOK.decode(r[:p])), "[ctx:", repr(TOK.decode(r[cs:ce])), "] →", repr(TOK.decode(r[p:])))
 

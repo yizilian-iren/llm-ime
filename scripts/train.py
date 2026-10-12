@@ -34,12 +34,13 @@ def load(path):
     else:  # r2 data: context first, clen tokens long
         ce = d["clen"] if "clen" in d else np.zeros_like(d["plen"])
         cs = np.zeros_like(ce)
-    return d["ids"], d["offsets"], d["plen"], cs, ce
+    keyids = d["keyids"] if "keyids" in d else None  # interleave data: letters in the target span, no loss
+    return d["ids"], d["offsets"], d["plen"], cs, ce, keyids
 
 
 def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None):
     """mix_input: (newline token id, w with context, w without) to also build the mix model's input."""
-    ids, off, plen, cstart, cend = data
+    ids, off, plen, cstart, cend, keyids = data
     lens = np.diff(off)
     order = rng.permutation(len(lens))
     # bucket into chunks of 100 batches' worth, sort within chunk by length to limit padding
@@ -70,6 +71,9 @@ def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None)
                 att[r, : len(seq)] = 1
                 y[r, plen[i] : len(seq)] = seq[plen[i] :]
                 w[r, plen[i] : len(seq)] = 1.0
+                if keyids is not None:
+                    k = plen[i] + np.flatnonzero(np.isin(seq[plen[i] :], keyids))
+                    y[r, k], w[r, k] = -100, 0.0
                 a, b = max(1, cstart[i]), cend[i]  # position 0 has nothing before it to predict from
                 if ctx_weight and b > a:
                     y[r, a:b] = seq[a:b]
@@ -219,6 +223,7 @@ def main():
         assert len(nl) == 1, nl
         mix_input, distill = (nl[0], a.mix_weight, a.mix_weight_empty), a.distill
     train, valid = load(f"{a.data}/train.npz"), load(f"{a.data}/valid.npz")
+    assert not (a.teacher and train[5] is not None), "distillation is not written for interleave data"
     n_tok = int(train[1][-1])
     steps = a.max_steps or int(a.epochs * n_tok / (a.tokens * 0.8))
     print(f"{len(train[2])} samples, {n_tok / 1e6:.0f}M tokens, ~{steps} steps", flush=True)

@@ -21,6 +21,10 @@ def load(name: str, **kw) -> Engine:
         from ime.ngram import NgramEngine
         return NgramEngine(**kw)
     if name == "llm":
+        from ime import fmt
+        if fmt.model_order(kw.get("model", "")) == "interleave":  # r4b
+            from ime.interleave import InterleaveEngine
+            return InterleaveEngine(**kw)
         from ime.llm import LLMEngine
         return LLMEngine(**kw)
     if name == "v02":  # v0.2's best: fine-tuned r2 with the base model mixed in (2A.3)

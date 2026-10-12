@@ -28,7 +28,11 @@ def initials(sylls: list[str]) -> str:
 
 
 def mixed(sylls: list[str], rng: random.Random) -> str:
-    """Some syllables typed in full, some as the first letter, some half-typed."""
+    return "".join(mixed_parts(sylls, rng))
+
+
+def mixed_parts(sylls: list[str], rng: random.Random) -> list[str]:
+    """Some syllables typed in full, some as the first letter, some half-typed: the keys per character."""
     out = []
     for s in sylls:
         r = rng.random()
@@ -38,4 +42,4 @@ def mixed(sylls: list[str], rng: random.Random) -> str:
             out.append(s[0])
         else:
             out.append(s[: rng.randint(1, len(s) - 1)] if len(s) > 2 else s[0])
-    return "".join(out)
+    return out
