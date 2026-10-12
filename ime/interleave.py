@@ -8,6 +8,10 @@ those keys, scored by the model's log-prob there (minus abbrev_penalty when the 
 Only character picks compete for the beam; ranking adds progress_bonus per key consumed, as in ime.llm.
 key_lp: weight of the model's log-prob of each key it is fed (a model trained with --key-weight scores the
 keys too, so a reading split wrongly, or a character that the following keys do not fit, costs there).
+mix: a second model (the base model, as in v02) rescores the finished sentences once, reading the plain
+context and each sentence with its own tokenization, weight mix_weight (mix_weight_empty with no context).
+Scoring it per character during the search does not work: fed one character per token, the base model
+gives a character that it would normally write inside a longer token (还 of 还有) a poor log-prob.
 Characters are single tokens; the rare ones that are not are never offered.
 
 Not incremental yet: every call searches the whole key string again (r4b's first step is to measure accuracy).
@@ -16,6 +20,7 @@ Not incremental yet: every call searches the whole key string again (r4b's first
 import time
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache
@@ -28,9 +33,12 @@ from ime.ngram import char_readings_table
 class InterleaveEngine:
     name = "llm"
 
-    def __init__(self, model, beam=12, abbrev_penalty=1.0, progress_bonus=3.0, key_lp=1.0, **_ignored):
+    def __init__(self, model, beam=12, abbrev_penalty=1.0, progress_bonus=3.0, key_lp=1.0, mix="",
+                 mix_weight=1.0, mix_weight_empty=0.5, empty_prompt="\n", **_ignored):
         self.model, self.tok = load(model)
-        self.beam, self.alpha, self.beta, self.gamma = beam, abbrev_penalty, progress_bonus, float(key_lp)
+        self.beam, self.alpha, self.beta, self.gamma = int(beam), float(abbrev_penalty), float(progress_bonus), float(key_lp)
+        self.mix = load(mix)[0] if mix else None
+        self.mix_w, self.mix_w_empty, self.empty_prompt = float(mix_weight), float(mix_weight_empty), empty_prompt
         self.eos = self.tok.eos_token_id
         self.letter = {c: self.tok.encode(c)[0] for c in "abcdefghijklmnopqrstuvwxyz"}
         # reading prefix -> (token ids of the characters with a reading starting with it, 1 where not whole)
@@ -66,6 +74,21 @@ class InterleaveEngine:
                 c.trim(c.offset - common)
         mx.eval(self.model(mx.array(ids[common:])[None], cache=self._cache), [c.state for c in self._cache])
         self._ids = ids
+
+    def _mix_scores(self, context, texts):
+        """The mix model's log-prob of each text after the plain context (one batched forward)."""
+        plain = self.tok.encode(context[-64:] if context.strip() else self.empty_prompt)
+        seqs = [self.tok.encode(t) for t in texts]
+        T = max(map(len, seqs))
+        x = np.zeros((len(seqs), len(plain) + T), np.int32)
+        for r, s in enumerate(seqs):
+            x[r, : len(plain)], x[r, len(plain) : len(plain) + len(s)] = plain, s
+        t0 = time.perf_counter()
+        lp = nn.log_softmax(self.mix(mx.array(x[:, :-1]))[:, len(plain) - 1 :, :].astype(mx.float32), axis=-1)
+        tgt = mx.array(x[:, len(plain) :])
+        got = np.array(mx.take_along_axis(lp, tgt[..., None], axis=-1)[..., 0])
+        self.stats["mix_ms"] = self.stats.get("mix_ms", 0.0) + (time.perf_counter() - t0) * 1000
+        return [float(got[r, : len(s)].sum()) for r, s in enumerate(seqs)]
 
     def convert(self, context, keys, k=5, beam=None, stop=None, eos=True, **_ignored):
         """Candidates for `keys`, best first. stop: called between steps, True drops the search (None
@@ -134,6 +157,14 @@ class InterleaveEngine:
             self.stats["forward_ms"] += (time.perf_counter() - t0) * 1000
             self.stats["calls"] += 1
             active = nxt
+        if self.mix and finished:
+            best = {}
+            for sc, t in finished:
+                best[t] = max(best.get(t, sc), sc)
+            top = sorted(best.items(), key=lambda x: -x[1])[:beam]
+            mw = self.mix_w if context.strip() else self.mix_w_empty
+            ms = self._mix_scores(context, [t for t, _ in top])
+            finished = [(sc + mw * m, t) for (t, sc), m in zip(top, ms)]
         out = []
         for _s, t in sorted(finished, reverse=True):
             if t not in self.paths:
