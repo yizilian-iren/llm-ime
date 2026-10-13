@@ -105,14 +105,14 @@ func render(_ s: Scene, to url: URL) {
     let frame = NSRect(origin: origin, size: size)
     let path = NSBezierPath(roundedRect: frame, xRadius: CandidateView.corner, yRadius: CandidateView.corner)
 
-    // Deck's --shadow-float: 0 0 0 .5px 20%, 0 16px 48px 22%, 0 4px 12px 8% (black). Drawn as a ring
-    // around the panel only, so it does not darken what shows through the glass.
+    // As ShadowView: Deck's --shadow-float without its 0.5px ring, 0 16px 48px 22%, 0 4px 12px 8% (black).
+    // Drawn as a ring around the panel only, so it does not darken what shows through the glass.
     NSGraphicsContext.saveGraphicsState()
     let outside = NSBezierPath(rect: NSRect(origin: .zero, size: sceneSize))
     outside.append(path)
     outside.windingRule = .evenOdd
     outside.addClip()
-    for (dy, blur, a) in [(16.0, 48.0, 0.22), (4.0, 12.0, 0.08), (0.0, 1.0, 0.20)] as [(CGFloat, CGFloat, CGFloat)] {
+    for (dy, blur, a) in [(16.0, 48.0, 0.22), (4.0, 12.0, 0.08)] as [(CGFloat, CGFloat, CGFloat)] {
         NSGraphicsContext.saveGraphicsState()
         let sh = NSShadow()
         sh.shadowOffset = NSSize(width: 0, height: -dy * scale)
