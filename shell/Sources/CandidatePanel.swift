@@ -3,6 +3,10 @@ import QuartzCore
 
 /// The floating candidate window (N-008): glass (behind-window blur + the view's tint), rounded,
 /// no border, never takes focus or clicks. One for the whole input method.
+/// Hidden settings for trying the glass on a real screen, read each time the window appears:
+///   defaults write com.iren.inputmethod.LLMIME tint -float 0.4        the tint's share of base (0-1; 0.6)
+///   defaults write com.iren.inputmethod.LLMIME material hudWindow     the blur's material, by name; none: no blur
+/// (defaults delete ... to go back).
 final class CandidatePanel: NSObject {
     static let shared = CandidatePanel()
 
@@ -14,6 +18,23 @@ final class CandidatePanel: NSObject {
     var appearance: Appearance {
         get { Appearance(rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .system }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "appearance"); applyTheme() }
+    }
+
+    private static let materials: [String: NSVisualEffectView.Material] = [
+        "popover": .popover, "menu": .menu, "hudWindow": .hudWindow, "underWindowBackground": .underWindowBackground,
+        "fullScreenUI": .fullScreenUI, "sidebar": .sidebar, "headerView": .headerView, "sheet": .sheet,
+        "windowBackground": .windowBackground, "toolTip": .toolTip, "titlebar": .titlebar,
+        "contentBackground": .contentBackground, "underPageBackground": .underPageBackground,
+    ]
+    /// The material from the hidden setting; nil for "none" (no blur: the tint alone).
+    private static var material: NSVisualEffectView.Material? {
+        let name = UserDefaults.standard.string(forKey: "material") ?? "popover"
+        return name == "none" ? nil : materials[name] ?? .popover
+    }
+    private static var tintAlpha: CGFloat {
+        let d = UserDefaults.standard
+        let a = d.object(forKey: "tint") == nil ? 0.60 : d.double(forKey: "tint")  // -float or a plain string
+        return CGFloat(min(max(a, 0), 1))
     }
 
     private override init() {
@@ -37,8 +58,10 @@ final class CandidatePanel: NSObject {
         let view = CandidateView()
         view.wantsLayer = true
         view.autoresizingMask = [.width, .height]
-        glass.addSubview(view)
-        panel.contentView = glass
+        let content = NSView()  // the glass under the view, as siblings, so "none" can hide the glass alone
+        content.addSubview(glass)
+        content.addSubview(view)
+        panel.contentView = content
         (self.panel, self.glass, self.view) = (panel, glass, view)
         super.init()
 
@@ -61,8 +84,12 @@ final class CandidatePanel: NSObject {
     }
 
     private func applyTheme() {
-        let theme = appearance.theme(systemDark: appearance == .system && Self.systemDark)
-        if view.theme.dark == theme.dark && glass.appearance != nil { return }
+        var theme = appearance.theme(systemDark: appearance == .system && Self.systemDark)
+        theme.tintAlpha = Self.tintAlpha
+        let material = Self.material
+        glass.isHidden = material == nil
+        if let m = material, glass.material != m { glass.material = m }
+        if view.theme.dark == theme.dark && view.theme.tintAlpha == theme.tintAlpha && glass.appearance != nil { return }
         view.theme = theme
         glass.appearance = NSAppearance(named: theme.dark ? .darkAqua : .aqua)
     }

@@ -13,8 +13,10 @@ struct Theme {
         base: hex(0x262624), mantle: hex(0x1f1e1c), surface0: hex(0x33322f), text: hex(0xe8e3d6),
         subtext0: hex(0xada799), overlay1: hex(0x7f7b72), overlay2: hex(0x959085), mauve: hex(0xcba6f7), dark: true)
 
-    /// The glass tint laid over the blur: base at 60%, so the page shows through (user, rv_mKRBScBm).
-    var tint: NSColor { base.withAlphaComponent(0.60) }
+    /// How much of base the glass tint is: 60%, so the page shows through (user, rv_mKRBScBm).
+    var tintAlpha: CGFloat = 0.60
+    /// The glass tint laid over the blur.
+    var tint: NSColor { base.withAlphaComponent(tintAlpha) }
     /// The selected candidate's background (Deck's --selected: overlay2 at 20%).
     var selected: NSColor { overlay2.withAlphaComponent(0.20) }
 }
