@@ -7,7 +7,7 @@ import CoreImage
 // The glass blur and the window shadow are imitated here (the real panel gets them from AppKit).
 
 let scale: CGFloat = 2
-let sceneSize = NSSize(width: 720, height: 340)
+let sceneSize = NSSize(width: 780, height: 340)
 
 struct Scene {
     let name: String
@@ -22,7 +22,8 @@ let scenes = [
 
 let keys = "jintianqunachifan"
 let model = CandidateModel(
-    candidates: ["今天去哪吃饭", "今天去那吃饭", "金天去哪吃饭", "今天去拿吃饭", "今天趣哪吃饭"],
+    candidates: ["今天去哪吃饭", "今天去那吃饭", "今天去拿吃饭", "今天去哪吃饭呢", "今天去那吃番",
+                 "今天去那吃饭呢", "今天去哪吃番", "今天去那吃饭那", "今天去拿吃饭呢", "今天去哪吃饭吧", "今天去那吃饭吧"],
     selected: 0)
 let icon = CommandLine.arguments.count > 2 ? NSImage(contentsOfFile: CommandLine.arguments[2]) : nil
 

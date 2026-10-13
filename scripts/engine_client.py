@@ -4,7 +4,7 @@
 
 Sends the growing key string after each quick answer, prints every answer with its time, and fails unless
 every key got a quick answer and the last key a full one. --check also loads the engine here and fails
-unless the full answer equals engine.convert(context, keys) (what the repl shows).
+unless the full answer's first page (5) equals engine.convert(context, keys) (what the repl shows).
 """
 
 import argparse
@@ -24,6 +24,7 @@ def main():
     ap.add_argument("--context", default="")
     ap.add_argument("--sock", default=DEFAULT_SOCK)
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--k", type=int, default=20, help="the service's --k, for --check")
     ap.add_argument("--timeout", type=float, default=30)
     a = ap.parse_args()
 
@@ -54,7 +55,7 @@ def main():
             r = recv()
             if r.get("id") != i or r.get("stage") != stage:
                 sys.exit(f"key {i}: expected {stage}, got {r}")
-            print(f"{keys:24} {stage:5} {(time.perf_counter() - t) * 1000:6.0f} ms  {' '.join(r['candidates'])}")
+            print(f"{keys:24} {stage:5} {(time.perf_counter() - t) * 1000:6.0f} ms  {len(r['candidates']):2}  {' '.join(r['candidates'][:5])}")
             if stage == "full":
                 full = r["candidates"]
     send({"op": "commit", "text": full[0]})
@@ -63,10 +64,12 @@ def main():
     if a.check:
         from ime import engine as engines
         os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        direct = engines.load("v02").convert(a.context, a.keys, k=5)
-        if direct != full:
-            sys.exit(f"service {full} != direct {direct}")
-        print("full answer matches engine.convert")
+        direct = engines.load("v02").convert(a.context, a.keys, k=a.k)
+        # The first page must agree; further down, near-tied candidates can swap (batched GPU sums differ).
+        if direct[:5] != full[:5]:
+            sys.exit(f"service {full[:5]} != direct {direct[:5]}")
+        same = sum(x == y for x, y in zip(full, direct))
+        print(f"first page matches engine.convert; {same} of {len(direct)} in the same place")
 
 
 if __name__ == "__main__":

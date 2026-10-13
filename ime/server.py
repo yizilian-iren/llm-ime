@@ -136,6 +136,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sock", default=DEFAULT_SOCK)
     ap.add_argument("--engine", default="v02")
+    ap.add_argument("--k", type=int, default=20, help="candidates of the full search (the shell pages them)")
     a = ap.parse_args()
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # model paths are repo-relative
 
@@ -143,7 +144,7 @@ def main():
     eng = engines.load(a.engine)
     eng.convert("", "nihao", k=1)  # first call compiles; do it before the shell waits on it
     log(f"loaded {a.engine} in {time.time() - t:.1f}s")
-    server = Server(eng)
+    server = Server(eng, k=a.k)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # launchd stops it with SIGTERM: remove the socket
     s = listen(a.sock)
     log(f"listening on {a.sock}")

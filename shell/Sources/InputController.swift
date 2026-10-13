@@ -56,15 +56,17 @@ final class InputController: IMKInputController {
             return true
         case 49:  // space
             guard composing else { return false }
-            commit(model.candidates.isEmpty ? keys : model.candidates[model.selected], client)
+            commit(model.current ?? keys, client)
             return true
-        case 123, 124:  // left / right move the selection
+        case 123, 124:  // left / right move the selection, on into the next or previous page
             guard composing else { return false }
-            if !model.candidates.isEmpty {
-                let step = event.keyCode == 123 ? -1 : 1
-                model.selected = (model.selected + step + model.candidates.count) % model.candidates.count
-                show(client, fade: false)
-            }
+            model.move(event.keyCode == 123 ? -1 : 1)
+            show(client, fade: false)
+            return true
+        case 125, 121, 126, 116:  // down / page down, up / page up turn the page
+            guard composing else { return false }
+            model.turn(event.keyCode == 125 || event.keyCode == 121 ? 1 : -1)
+            show(client, fade: false)
             return true
         default:
             break
@@ -78,8 +80,13 @@ final class InputController: IMKInputController {
                 update(client)
                 return true
             }
-            if composing, let n = Int(chars), (1...5).contains(n) {
-                if n <= model.candidates.count { commit(model.candidates[n - 1], client) }
+            if composing, let n = Int(chars), (1...CandidateModel.pageSize).contains(n) {
+                if let c = model.slot(n) { commit(c, client) }
+                return true
+            }
+            if composing && (chars == "=" || chars == "-") {  // = / - turn the page
+                model.turn(chars == "=" ? 1 : -1)
+                show(client, fade: false)
                 return true
             }
             if let p = Punctuation.chinese(for: chars, after: composing ? nil : lastChar(client)) {
@@ -122,7 +129,7 @@ final class InputController: IMKInputController {
         guard id == requestId, !keys.isEmpty, let client = self.client() else { return }
         let fade = stage == "full" && self.stage == "quick" && !model.candidates.isEmpty
         self.stage = stage
-        model.candidates = Array(candidates.prefix(5))
+        model.candidates = candidates
         model.selected = 0
         show(client, fade: fade)
     }
@@ -132,7 +139,7 @@ final class InputController: IMKInputController {
     }
 
     private func commitBest(_ client: IMKTextInput) {
-        commit(model.candidates.isEmpty ? keys : model.candidates[model.selected], client)
+        commit(model.current ?? keys, client)
     }
 
     private func commit(_ text: String, _ client: IMKTextInput) {

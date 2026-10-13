@@ -2,6 +2,7 @@
 # Builds shell/build/LLMIME.app with the Command Line Tools' swiftc (no Xcode), ad-hoc signed.
 #   shell/build.sh            the input method
 #   shell/build.sh mock DIR   also the candidate window mock, rendered light / dark into DIR
+#   shell/build.sh test       also the candidate paging test
 set -e
 cd "$(dirname "$0")"
 B=build
@@ -20,4 +21,8 @@ echo "built $APP $VERSION"
 if [ "$1" = mock ]; then
   swiftc -O -framework AppKit -framework CoreImage Sources/Theme.swift Sources/CandidateView.swift tools/mock/main.swift -o $B/tools/mock
   $B/tools/mock "${2:-$B/mock}" "$APP/Contents/Resources/icon.tiff"
+fi
+if [ "$1" = test ]; then
+  swiftc -O -framework AppKit Sources/Theme.swift Sources/CandidateView.swift tools/test/main.swift -o $B/tools/test
+  $B/tools/test
 fi
