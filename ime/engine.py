@@ -30,6 +30,7 @@ def load(name: str, **kw) -> Engine:
     if name == "v02":  # v0.2's best: fine-tuned r2 with the base model mixed in (2A.3)
         from ime.llm import LLMEngine
         cfg = dict(model="models/r2-4bit", mix="models/qwen3-0.6b-base-4bit", mix_weight=1.0, mix_weight_empty=0.5,
-                   split_penalty=9.0)  # ma read as 命啊 / 没啊 instead of 吗 (user on M3, v0.4)
+                   split_penalty=9.0,  # ma read as 命啊 / 没啊 instead of 吗 (user on M3, v0.4)
+                   swap_penalty=3.0)  # zhognguo read as 中国 (5B.1)
         return LLMEngine(**{**cfg, **kw})
     raise ValueError(f"unknown engine {name}")

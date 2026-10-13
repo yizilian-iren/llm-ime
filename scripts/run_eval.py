@@ -2,6 +2,9 @@
 
   python scripts/run_eval.py --engine ngram [--forms full,initials,mixed] [--limit N] [--latency 40]
 
+Forms full_swap / mixed_swap: the full / mixed keys with two adjacent letters of one typed syllable exchanged
+(one per item, fixed by its id; items with no such pair are left out), for the swap tolerance (5B.1).
+
 Accuracy: one call per item with the whole key string.
 Latency: on the first --latency items (initials form), type key by key and time every call.
 Per-item outputs go to data/private/results/<engine>-<tag>.jsonl (they contain the user's text).
@@ -10,6 +13,7 @@ Per-item outputs go to data/private/results/<engine>-<tag>.jsonl (they contain t
 import argparse
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -17,6 +21,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ime import engine as engines  # noqa: E402
+from ime import pinyin  # noqa: E402
 
 HAN = re.compile(r"[一-鿿]")
 EXAMPLES = [  # the user's own complaints, always reported one by one
@@ -24,6 +29,22 @@ EXAMPLES = [  # the user's own complaints, always reported one by one
     ("这个方案你觉得怎么样", "还有别的办法呢"),
     ("现在是不是没问题", "呢"),
 ]
+
+
+def swapped(r, form):
+    """r's full / mixed keys with one adjacent pair inside a typed syllable exchanged, or None if none can be."""
+    parts = r["sylls"] if form == "full" else pinyin.mixed_parts(r["sylls"], random.Random(r["id"]))  # as build_eval
+    assert "".join(parts) == r[form], (r["id"], form)
+    pairs = [(i, j) for i, s in enumerate(parts) for j in range(len(s) - 1) if s[j] != s[j + 1]]
+    if not pairs:
+        return None
+    i, j = random.Random(f"{r['id']}-{form}").choice(pairs)
+    s = parts[i]
+    return "".join(parts[:i]) + s[:j] + s[j + 1] + s[j] + s[j + 2:] + "".join(parts[i + 1:])
+
+
+def keys_of(r, form):
+    return swapped(r, form.removesuffix("_swap")) if form.endswith("_swap") else r[form]
 
 
 def ctx_bucket(ctx):
@@ -71,7 +92,10 @@ def main():
     t0 = time.time()
     for i, r in enumerate(items):
         for form in forms:
-            cands = eng.convert(r["context"], r[form], k=5)
+            keys = keys_of(r, form)
+            if keys is None:
+                continue
+            cands = eng.convert(r["context"], keys, k=5)
             p1 = bool(cands) and cands[0] == r["target"]
             p5 = r["target"] in cands[:5]
             for b in ("all", f"{form}", f"{form} {ctx_bucket(r['context'])}", f"{form} {len_bucket(r['target'])}",
@@ -80,7 +104,7 @@ def main():
                 h[0] += 1
                 h[1] += p1
                 h[2] += p5
-            out.append({"id": r["id"], "form": form, "keys": r[form], "target": r["target"], "cands": cands, "p1": p1})
+            out.append({"id": r["id"], "form": form, "keys": keys, "target": r["target"], "cands": cands, "p1": p1})
         if (i + 1) % 50 == 0:
             print(f"  {i + 1}/{len(items)}  {time.time() - t0:.0f}s", file=sys.stderr)
 

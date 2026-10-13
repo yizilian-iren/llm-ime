@@ -29,7 +29,8 @@ class LLMEngine:
 
     def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
                  empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
-                 split_penalty=0.0):
+                 split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
+                 swap_retries=1):
         self.model, self.tok = load(model)
         self.mix = _Cached(load(mix)[0]) if mix else None
         # With no context the mixed-in model is only guessing: it gets its own (usually smaller) weight.
@@ -48,8 +49,16 @@ class LLMEngine:
         self.prefixes = {r[:i] for rs in char_readings_table().values() for r in rs for i in range(1, len(r) + 1)}
         # split_penalty: nats more for an abbreviated character whose keys, read one key further or more,
         # are a whole syllable (ma read as 命啊 / 没啊 instead of 吗); real initials (jt of 今天) never pay it.
-        self.syllables = {r for rs in char_readings_table().values() for r in rs}
+        self.char_readings = char_readings_table()
+        self.syllables = {r for rs in self.char_readings.values() for r in rs}
         self.split_penalty = float(split_penalty)
+        # swap_penalty: nats for reading two adjacent keys the other way round (zhognguo as 中国); 0 turns it off.
+        # Both letters must fall in whole syllables of one token, so an abbreviation is never read as a swap.
+        self.swap_penalty = float(swap_penalty)
+        # The fine-tuned model reads the keys as typed and disbelieves a swap: a swap reading that, before its
+        # swap_penalty, is within swap_margin nats of the best is searched again with the swapped keys in the
+        # prompt (the best swap_retries of them), and those results replace the swap readings.
+        self.swap_margin, self.swap_retries = float(swap_margin), int(swap_retries)
         self.root, self.tok_text = self._token_trie(model)
         self._ids, self._ctx_cache, self._ctx_logits = [], None, None
         self.stats = {"forward_ms": 0.0, "calls": 0}
@@ -86,35 +95,77 @@ class LLMEngine:
         finish(root)
         return root, text
 
-    def edges(self, keys, p):
-        """{(end, token_id): lowest cost} for tokens starting at key position p: abbrev_penalty per abbreviated
-        char, plus split_penalty when its keys are cut short of a whole syllable the user typed."""
+    def edges(self, keys, p, swaps=True):
+        """Tokens starting at key position p: (ends, token ids, costs, swaps), the lowest cost per (end, token):
+        abbrev_penalty per abbreviated char, plus split_penalty when its keys are cut short of a whole syllable
+        the user typed, plus (with `swaps` and swap_penalty) swap_penalty when two adjacent keys inside the
+        token are read the other way round; swaps[i] is the first of those two keys' positions, or -1."""
         out = {}
+        n = len(keys)
 
-        def walk(node, q, ab):
-            for t in node.words:
-                if out.get((q, t), 99) > ab:
-                    out[(q, t)] = ab
-            if q >= len(keys):
+        def walk(node, q, ab, ks, sw):
+            # ks: the keys as read (keys, or keys with sw and sw + 1 exchanged); the token may end only past the swap
+            if sw is None or q >= sw + 2:
+                for t in node.words:
+                    if out.get((q, t), (99,))[0] > ab:
+                        out[(q, t)] = (ab, -1 if sw is None else sw)
+            if q >= n:
                 return
-            for sy in node.by_letter.get(keys[q], ()):
+            for sy in node.by_letter.get(ks[q], ()):
                 kid = node.kids[sy]
                 m = 1
-                while m < len(sy) and q + m < len(keys) and keys[q + m] == sy[m]:
+                while m < len(sy) and q + m < n and ks[q + m] == sy[m]:
                     m += 1
                 for L in range(1, m + 1):
+                    if sw is not None and L < len(sy) and q <= sw + 1 and q + L > sw:
+                        continue  # a swapped letter in an abbreviated syllable
                     cost = 0.0
                     if L < len(sy):
                         cost = self.alpha
-                        if self.split_penalty and any(keys[q:j] in self.syllables for j in range(q + L + 1, min(q + 7, len(keys) + 1))):
+                        if self.split_penalty and any(ks[q:j] in self.syllables for j in range(q + L + 1, min(q + 7, n + 1))):
                             cost += self.split_penalty
-                    walk(kid, q + L, ab + cost)
+                    walk(kid, q + L, ab + cost, ks, sw)
+            if sw is None and swaps and self.swap_penalty:
+                # the swap starts in the syllable read from q (whole, swapped letters and all)
+                for j in range(q, min(q + 6, n - 1)):
+                    if keys[j] == keys[j + 1]:
+                        continue
+                    ks2 = keys[:j] + keys[j + 1] + keys[j] + keys[j + 2:]
+                    for sy in node.by_letter.get(ks2[q], ()):
+                        L = len(sy)
+                        if q + L > j and ks2[q : q + L] == sy:
+                            walk(node.kids[sy], q + L, ab + self.swap_penalty, ks2, j)
 
-        walk(self.root, p, 0.0)
+        walk(self.root, p, 0.0, keys, None)
         ends = np.array([e for e, _ in out], dtype=np.int32)
         tids = np.array([t for _, t in out], dtype=np.int32)
-        abs_ = np.array(list(out.values()), dtype=np.float32)
-        return ends, tids, abs_
+        abs_ = np.array([c for c, _ in out.values()], dtype=np.float32)
+        sws = np.array([s for _, s in out.values()], dtype=np.int32)
+        return ends, tids, abs_, sws
+
+    def feasible(self, keys, swaps=True):
+        """feasible[p]: keys[p:] can be split into reading prefixes, or (with swap_penalty) whole syllables
+        with two adjacent keys exchanged (else a hypothesis at p is a dead end)."""
+        n = len(keys)
+        jumps = [[] for _ in range(n)]  # p -> ends of spans readable with one swap
+        if swaps and self.swap_penalty:
+            for j in range(n - 1):
+                if keys[j] == keys[j + 1]:
+                    continue
+                ks = keys[:j] + keys[j + 1] + keys[j] + keys[j + 2:]
+                for s in range(max(0, j - 5), j + 1):
+                    for e in range(j + 1, min(s + 6, n) + 1):
+                        if ks[s:e] not in self.syllables:
+                            continue
+                        if e > j + 1:
+                            jumps[s].append(e)
+                        else:  # the swap straddles into the next syllable, which must be whole too
+                            jumps[s] += [e2 for e2 in range(e + 1, min(e + 6, n) + 1) if ks[e:e2] in self.syllables]
+        ok = [False] * n + [True]
+        for p in range(n - 1, -1, -1):
+            ok[p] = any(ok[p + L] for L in range(1, min(6, n - p) + 1) if keys[p : p + L] in self.prefixes) or any(
+                ok[e] for e in jumps[p])
+        return ok
 
     # --- model ----------------------------------------------------------------
     def _prefill(self, prompt):
@@ -156,10 +207,56 @@ class LLMEngine:
         stop: called between beam steps; when it returns True the search is dropped and None returned.
         eos: False finishes a hypothesis as soon as it has consumed all keys, without the extra step that
           scores the end of the sentence (fine-tuned models only; base models never score it).
+        With swap_penalty, keys may also be read with two adjacent letters exchanged (see edges); for a fine-tuned
+        model a good enough swap reading costs a second search with the swapped keys in the prompt.
         """
         self.paths = {}
         if not keys:
             return []
+        found = self._search(context, keys, k, beam, mix, prefix, stop, eos, swaps=True)
+        if found and self.keys_in_prompt and self.swap_penalty:
+            # a swap reading of a text the typed keys also read without one stays, and is no reason to search again
+            found = [f if not f[3] or not self._reads(f[1], keys) else (*f[:3], ()) for f in found]
+            best, fixes = found[0][0], []
+            for score, _t, _path, sw in found:
+                if sw and score + self.swap_penalty * len(sw) >= best - self.swap_margin and sw not in fixes \
+                        and len(fixes) < self.swap_retries:
+                    fixes.append(sw)
+            if fixes:
+                found = [f for f in found if not f[3]]
+                for sw in fixes:
+                    ks = list(keys)
+                    for j in sw:
+                        ks[j], ks[j + 1] = ks[j + 1], ks[j]
+                    pre = prefix if prefix and prefix[-1][1] <= min(sw) else None  # read from keys the swap left alone
+                    again = self._search(context, "".join(ks), k, beam, mix, pre, stop, eos, swaps=False)
+                    if again is None:
+                        return None
+                    found += [(score - self.swap_penalty * len(sw), t, path, sw) for score, t, path, _ in again]
+                    self.stats["swap_retries"] = self.stats.get("swap_retries", 0) + 1
+                found.sort(key=lambda f: f[:3], reverse=True)
+        if found is None:
+            return None
+        out = []
+        for _s, t, path, _sw in found:
+            if t not in self.paths:
+                self.paths[t] = path
+                out.append(t)
+        return out[:k]
+
+    def _reads(self, text, keys):
+        """Whether `keys` read as `text` with no swap: each character a non-empty prefix of one of its readings."""
+        ends = {0}
+        for ch in text:
+            rs = self.char_readings.get(ch, ())
+            ends = {e + L for e in ends for r in rs for L in range(1, len(r) + 1) if keys[e : e + L] == r[:L]}
+            if not ends:
+                return False
+        return len(keys) in ends
+
+    def _search(self, context, keys, k, beam, mix, prefix, stop, eos, swaps):
+        """The beam search of convert: finished hypotheses (score, text, path, swap positions) best first,
+        or None when `stop` dropped it. The keys in the prompt are `keys`."""
         beam = beam or self.beam
         mix = bool(self.mix) and mix
         plain = context[-64:] if context.strip() else self.empty_prompt
@@ -170,25 +267,22 @@ class LLMEngine:
         if mix:
             self.mix.prefill(self.tok.encode(plain))
         n = len(keys)
-        # feasible[p]: keys[p:] can be split into reading prefixes (else that hypothesis is a dead end)
-        feasible = [False] * n + [True]
-        for p in range(n - 1, -1, -1):
-            feasible[p] = any(feasible[p + L] for L in range(1, min(6, n - p) + 1) if keys[p : p + L] in self.prefixes)
+        feasible = self.feasible(keys, swaps)
         if not feasible[0]:
             return []
         edge_cache = {}
 
         def edges_at(p):
             if p not in edge_cache:
-                ends, tids, abs_ = self.edges(keys, p)
-                ok = np.array([feasible[e] for e in ends], dtype=bool)
-                edge_cache[p] = (ends[ok], tids[ok], abs_[ok]) if len(ends) else (ends, tids, abs_)
+                e = self.edges(keys, p, swaps)
+                ok = np.array([feasible[x] for x in e[0]], dtype=bool)
+                edge_cache[p] = tuple(x[ok] for x in e) if len(e[0]) else e
             return edge_cache[p]
 
         logits = self._ctx_logits
         mix_logits = self.mix.ctx_logits if mix else None
         mix_w = (self.mix_weight if context.strip() else self.mix_weight_empty) if mix else 0
-        active = [(0.0, "", 0, ())]  # (score, text, key position, path)
+        active = [(0.0, "", 0, (), ())]  # (score, text, key position, path, swap positions)
         cache = mix_cache = None
         if prefix and prefix[-1][1] <= n and feasible[prefix[-1][1]]:
             path = tuple(prefix)
@@ -198,14 +292,14 @@ class LLMEngine:
             if mix_w:
                 mix_cache = self.mix.fork(mx.array([0]), len(path) + n + 2)
                 mix_logits = self.mix.model(ptoks, cache=mix_cache)[:, -1, :]
-            active = [(0.0, "".join(self.tok_text[t] for t, _e in path), path[-1][1], path)]
+            active = [(0.0, "".join(self.tok_text[t] for t, _e in path), path[-1][1], path, ())]
         finished = []
         for _step in range(n + 1):
             if stop and stop():
                 return None
             # Only the columns this step can use (the tokens that fit at the beams' key positions, and EOS)
             # leave the GPU: copying the whole vocab per beam cost more than the forward.
-            pos = {p for _s, _t, p, _path in active if p < n}
+            pos = {h[2] for h in active if h[2] < n}
             cols = np.unique(np.concatenate([edges_at(p)[1] for p in pos] + [np.array([self.eos], np.int32)]))
             col_of = lambda t: np.searchsorted(cols, t)  # noqa: E731
             lp = _log_softmax_cols(logits, mx.array(cols))
@@ -218,36 +312,37 @@ class LLMEngine:
                 lp[:, col_of(self.eos)] = eos_lp
             else:
                 lp = np.array(lp)
-            cand_s, cand_parent, cand_tid, cand_end = [], [], [], []
-            for b, (score, text, p, path) in enumerate(active):
+            cand_s, cand_parent, cand_tid, cand_end, cand_sw = [], [], [], [], []
+            for b, (score, text, p, path, sw) in enumerate(active):
                 if p == n:  # all keys consumed, waiting for its end-of-sentence score
-                    finished.append((score + float(lp[b, col_of(self.eos)]), text, path))
+                    finished.append((score + float(lp[b, col_of(self.eos)]), text, path, sw))
                     continue
-                ends, tids, abs_ = edges_at(p)
+                ends, tids, abs_, sws = edges_at(p)
                 if len(tids) == 0:
                     continue
                 cand_s.append(score + lp[b, col_of(tids)] - abs_)
                 cand_parent.append(np.full(len(tids), b))
                 cand_tid.append(tids)
                 cand_end.append(ends)
+                cand_sw.append(sws)
             if not cand_s:
-                finished.sort(reverse=True)
                 break
-            S, P, T, E = (np.concatenate(x) for x in (cand_s, cand_parent, cand_tid, cand_end))
+            S, P, T, E, W = (np.concatenate(x) for x in (cand_s, cand_parent, cand_tid, cand_end, cand_sw))
             order = np.argsort(-(S + self.beta * E))
             nxt, parents, tids = [], [], []
             for j in order:
                 text = active[P[j]][1] + self.tok_text[int(T[j])]
                 path = active[P[j]][3] + ((int(T[j]), int(E[j])),)
+                sw = active[P[j]][4] + ((int(W[j]),) if W[j] >= 0 else ())
                 if E[j] == n and not (self.keys_in_prompt and eos):
-                    finished.append((float(S[j]), text, path))
+                    finished.append((float(S[j]), text, path, sw))
                 elif len(nxt) < beam:
-                    nxt.append((float(S[j]), text, int(E[j]), path))
+                    nxt.append((float(S[j]), text, int(E[j]), path, sw))
                     parents.append(int(P[j]))
                     tids.append(int(T[j]))
                 if len(nxt) >= beam and len(finished) >= k * 3:
                     break
-            finished.sort(reverse=True)
+            finished.sort(key=lambda f: f[:3], reverse=True)
             if not nxt or (len(finished) >= k and finished[k - 1][0] >= max(h[0] for h in nxt)):
                 break
             idx = mx.array(parents)
@@ -266,12 +361,8 @@ class LLMEngine:
             self.stats["forward_ms"] += (time.perf_counter() - t0) * 1000
             self.stats["calls"] += 1
             active = nxt
-        out = []
-        for _s, t, path in sorted(finished, reverse=True):
-            if t not in self.paths:
-                self.paths[t] = path
-                out.append(t)
-        return out[:k]
+        finished.sort(key=lambda f: f[:3], reverse=True)
+        return finished
 
     def segments(self, context, keys, words=30):
         """Candidates for the start of `keys` only, for picking a sentence piece by piece (4A.10): [(text, keys used)],

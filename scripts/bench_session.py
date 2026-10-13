@@ -49,8 +49,9 @@ def main():
     ap.add_argument("--interval", type=float, default=150)
     ap.add_argument("--form", default="initials", choices=["initials", "full", "mixed"], help="which keys of each item")
     ap.add_argument("--quick-beam", type=int, default=None, help="beam of the quick guess (Session's default if not given)")
+    ap.add_argument("--opt", action="append", default=[], help="engine option key=value (numbers)")
     a = ap.parse_args()
-    eng = engines.load(a.engine)
+    eng = engines.load(a.engine, **{k: float(v) for k, v in (o.split("=", 1) for o in a.opt)})
     items = [json.loads(line) for line in open("data/private/eval.jsonl")][: a.items]
 
     rec = Recorder()
@@ -109,6 +110,8 @@ def main():
     print(f"session: quick p50 {pct(ses_quick, .5):.0f} p95 {pct(ses_quick, .95):.0f} ms, "
           f"full p50 {pct(ses_lat, .5):.0f} p95 {pct(ses_lat, .95):.0f} ms; "
           f"every key in turn: p50 {pct(seq_lat, .5):.0f} p95 {pct(seq_lat, .95):.0f} ms")
+    if "swap_retries" in eng.stats:
+        print(f"second searches for a swap: {eng.stats['swap_retries']}")
 
 
 if __name__ == "__main__":
