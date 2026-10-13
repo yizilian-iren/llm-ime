@@ -205,9 +205,10 @@ final class InputController: IMKInputController {
     // MARK: composing
 
     private func update(_ client: IMKTextInput) {
-        // A thin underline only (user: 「不出这个蓝色的」), in the accent (「怎么不用紫色的线」). A plain string, or IMK's
-        // raw-text style, has no underline of its own, and each app draws its default: Chromium-based ones a thick
-        // underline on a blue background.
+        // A thin underline only (user: 「不出这个蓝色的」): a plain string, or IMK's raw-text style, has no underline of
+        // its own, and apps drew their default (a thick line, on blue in Chromium-based ones). The line's color is the
+        // app's, from the system Accent color: our underlineColor does not get through (on M3 the line followed the
+        // Accent color), and no attribute makes Chromium draw none, so the shell does not draw its own (D-027).
         let marked = NSAttributedString(string: keys, attributes: [
             .underlineStyle: NSUnderlineStyle.single.rawValue, .underlineColor: CandidatePanel.shared.accent,
             .markedClauseSegment: 0])
