@@ -18,6 +18,6 @@ $B/tools/icon "$APP/Contents/Resources/icon.tiff"
 codesign --force --sign - "$APP"
 echo "built $APP $VERSION"
 if [ "$1" = mock ]; then
-  swiftc -O -framework AppKit -framework CoreImage Sources/Theme.swift Sources/CandidateView.swift tools/mock.swift -o $B/tools/mock
-  $B/tools/mock "${2:-$B/mock}"
+  swiftc -O -framework AppKit -framework CoreImage Sources/Theme.swift Sources/CandidateView.swift tools/mock/main.swift -o $B/tools/mock
+  $B/tools/mock "${2:-$B/mock}" "$APP/Contents/Resources/icon.tiff"
 fi

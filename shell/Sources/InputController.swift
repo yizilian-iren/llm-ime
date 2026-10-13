@@ -112,7 +112,6 @@ final class InputController: IMKInputController {
     private func update(_ client: IMKTextInput) {
         client.setMarkedText(keys, selectionRange: NSRange(location: keys.utf16.count, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
-        model.keys = keys
         let ctx = context ?? String(Self.history.suffix(64))
         requestId = EngineClient.shared.type(context: ctx, keys: keys)
         if model.candidates.isEmpty { return }  // the panel appears with the first answer
