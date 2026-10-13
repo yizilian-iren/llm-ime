@@ -285,9 +285,8 @@ class LLMEngine:
 
     def _single_first(self, context, keys, mix, out):
         """For keys that are one whole syllable: its characters ranked by log frequency + single_weight x their
-        score at the first step (as in segments, alt_bonus included) first, SINGLE_PAGE of them and only GB2312
-        ones; then the search's
-        other candidates that read the keys as whole syllables (西安 for xian), the rest of those characters, and
+        score at the first step (as in segments) + alt_bonus for an extra reading (en: 嗯 before 恩) first,
+        SINGLE_PAGE of them and only GB2312 ones; then the search's other candidates that read the keys as whole syllables (西安 for xian), the rest of those characters, and
         last what abbreviates a syllable (河南 for hen as he + n, 真爱 for zai). Without the n / ng / m of 嗯 呣:
         n is mostly the start of ni."""
         n = len(keys)
@@ -302,14 +301,15 @@ class LLMEngine:
                        for e, t, a, f in zip(ends, tids, abs_, fixes)], dtype=bool)
         if not ok.any():
             return out
-        tids, abs_ = tids[ok], abs_[ok]
+        tids, bonus = tids[ok], [-sum(x[3] for x in f) for f in fixes[ok]]
         cols = np.unique(tids)
         lp = np.array(_log_softmax_cols(self._ctx_logits, mx.array(cols)))[0]
         if mix_w:
             lp = lp + mix_w * np.array(_log_softmax_cols(self.mix.ctx_logits, mx.array(cols)))[0]
         floor = min(self.char_logp.values())
-        score = [self.single_weight * (lp[np.searchsorted(cols, t)] - a) + self.char_logp.get(self.tok_text[int(t)], floor)
-                 for t, a in zip(tids, abs_)]
+        # alt_bonus whole, not scaled: it is how the user types (嗯 as en), not the model's opinion
+        score = [self.single_weight * lp[np.searchsorted(cols, t)] + b + self.char_logp.get(self.tok_text[int(t)], floor)
+                 for t, b in zip(tids, bonus)]
         singles = []
         for j in np.argsort(score, kind="stable")[::-1]:
             t = self.tok_text[int(tids[j])]
