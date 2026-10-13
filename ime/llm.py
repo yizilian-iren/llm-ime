@@ -381,10 +381,8 @@ class LLMEngine:
         if self.mix:
             self.mix.prefill(self.tok.encode(plain))
             mix_w = self.mix_weight if context.strip() else self.mix_weight_empty
-        feasible = [False] * n + [True]  # as in convert
-        for p in range(n - 1, -1, -1):
-            feasible[p] = any(feasible[p + L] for L in range(1, min(6, n - p) + 1) if keys[p : p + L] in self.prefixes)
-        ends, tids, abs_ = self.edges(keys, 0)
+        feasible = self.feasible(keys, swaps=False)  # as in convert, but no swaps: pieces are read as typed
+        ends, tids, abs_, _sw = self.edges(keys, 0, swaps=False)
         ok = np.array([feasible[e] for e in ends], dtype=bool)
         if not ok.any():
             return []
