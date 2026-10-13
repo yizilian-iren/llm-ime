@@ -204,7 +204,11 @@ final class InputController: IMKInputController {
     // MARK: composing
 
     private func update(_ client: IMKTextInput) {
-        client.setMarkedText(keys, selectionRange: NSRange(location: keys.utf16.count, length: 0),
+        // A thin underline only (user: 「不出这个蓝色的」). A plain string, or IMK's raw-text style, has no underline
+        // of its own, and each app draws its default: Chromium-based ones a thick underline on a blue background.
+        let marked = NSAttributedString(string: keys, attributes: [
+            .underlineStyle: NSUnderlineStyle.single.rawValue, .markedClauseSegment: 0])
+        client.setMarkedText(marked, selectionRange: NSRange(location: keys.utf16.count, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
         wantNextPage = false
         picked = false

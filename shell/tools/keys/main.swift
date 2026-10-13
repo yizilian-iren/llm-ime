@@ -65,7 +65,12 @@ final class FakeClient: NSObject, IMKTextInput {
     var text = ""
     var marked = ""
     func insertText(_ string: Any!, replacementRange: NSRange) { text += "\(string!)"; marked = "" }
-    func setMarkedText(_ string: Any!, selectionRange: NSRange, replacementRange: NSRange) { marked = "\(string!)" }
+    var markedStyle: Any?
+    func setMarkedText(_ string: Any!, selectionRange: NSRange, replacementRange: NSRange) {
+        let a = string as? NSAttributedString
+        marked = a?.string ?? "\(string!)"
+        markedStyle = a?.length ?? 0 > 0 ? a?.attribute(.underlineStyle, at: 0, effectiveRange: nil) : nil
+    }
     func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }  // as a terminal: no text to read
     func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
     func attributedSubstring(from range: NSRange) -> NSAttributedString! { nil }
@@ -169,6 +174,14 @@ check(client.text == "da", "then return commits the new letters: \(client.text)"
 Engine.quick = 0.3; Engine.full = 0.6
 t = run("delete", ["d", "space", "delete"], settle: 1)
 check(t == "", "d space delete -> committed, then deleted by the app: '\(t)'")
+// 4A.2: the keys are marked with a thin underline (no app default: a blue background in Chromium).
+client.text = ""
+press(["d", "a"])
+check(client.marked == "da" && client.markedStyle as? Int == NSUnderlineStyle.single.rawValue,
+      "marked text with a single underline: \(client.marked) \(String(describing: client.markedStyle))")
+press(["return"])
+wait(1)
+
 // 4A.9: Chinese punctuation when chosen in the menu.
 Engine.quick = 0.05; Engine.full = 0.25
 Punctuation.chineseOn = true
