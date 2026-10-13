@@ -6,3 +6,4 @@ data/corpus/
 models/
 .DS_Store
 logs/
+shell/build/

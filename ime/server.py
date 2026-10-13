@@ -18,6 +18,7 @@ Nothing the user types is logged or written to disk; the log has times, connecti
 import argparse
 import json
 import os
+import signal
 import socket
 import sys
 import threading
@@ -143,6 +144,7 @@ def main():
     eng.convert("", "nihao", k=1)  # first call compiles; do it before the shell waits on it
     log(f"loaded {a.engine} in {time.time() - t:.1f}s")
     server = Server(eng)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # launchd stops it with SIGTERM: remove the socket
     s = listen(a.sock)
     log(f"listening on {a.sock}")
     try:
