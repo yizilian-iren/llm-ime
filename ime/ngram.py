@@ -57,7 +57,7 @@ class Node:
         self.kids: dict[str, Node] = {}
         self.by_letter: dict[str, list[str]] = {}
         self.words: list[str] = []
-        self.alt: dict = {}  # word -> ((syllable index, the dictionary's reading), ...) when only EXTRA_READINGS reach it here
+        self.alt: dict = {}  # word -> ((syllable index, the dictionary's reading, the typed one), ...) when only EXTRA_READINGS reach it here
 
 
 class NgramEngine:

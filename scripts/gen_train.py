@@ -2,7 +2,8 @@
 
 From each corpus line: pick a cut point, the target is the next 2–16 Han characters, the context is the
 text before it, i.e. what an IME sees left of the cursor: the same message for chat, the article so far for
-Wikipedia (dropped to empty 15% of the time). Keys: full / initials / mixed with equal weight.
+Wikipedia (dropped to empty 15% of the time). Keys: full / initials / mixed with equal weight; a character with
+EXTRA_READINGS (嗯) is typed by any of its readings (n or en) alike.
 Sources: LCCC and Wikipedia ~1:1, plus the user's own WeChat messages (--private) at ~5% of samples.
 Stored pre-tokenized: ids (flat int32), offsets, prefix lengths (where the target starts) and the context's
 token span cstart:cend (the context tokens get a down-weighted LM loss in train.py). --order picks the
@@ -21,6 +22,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ime import corpus, fmt, pinyin  # noqa: E402
+from ime.ngram import with_extra  # noqa: E402
 
 HAN_RUN = re.compile(r"[一-鿿]{2,}")
 TOK = None
@@ -48,7 +50,7 @@ def samples(lines, seed):
             continue
         target = line[start : start + L]
         ctx = "" if rng.random() < 0.15 else (before + line[:start])[-fmt.CTX_CHARS :]
-        s = pinyin.syllables(target)
+        s = rng.choice(with_extra(target, pinyin.syllables(target)))  # 嗯 typed n or en (ngram.EXTRA_READINGS)
         form = rng.random()
         pieces = s if form < 1 / 3 else [x[0] for x in s] if form < 2 / 3 else pinyin.mixed_parts(s, rng)
         out.append((ctx, "".join(pieces), target, pieces))

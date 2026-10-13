@@ -2,7 +2,7 @@
 
 - Training formats where the model decides as it reads (interleave): give the inputs it reads a loss too (`train.py --key-weight`), or the score never pays for a wrong segmentation or for keys that do not fit (r4b: dao read as 大哦).
 - The base model must score whole sentences with its own tokenization; fed one character per token it underrates characters it normally writes inside a longer token (还 of 还有).
-- Reading the keys other than as typed (a swap, later typos): the fine-tuned model sees the typed keys in its prompt and scores against them, so a corrected reading needs a search with the corrected keys in the prompt (`swap_margin` in `ime/llm.py`); scoring it under the typed prompt, or by the base model alone, loses.
+- Reading the keys other than as typed (a swap, later typos): the fine-tuned model sees the typed keys in its prompt and scores against them, so a corrected reading needs a search with the corrected keys in the prompt (`swap_margin` in `ime/llm.py`); scoring it under the typed prompt, or by the base model alone, loses. An extra reading (嗯 as en, `ngram.EXTRA_READINGS`): standard keys in the prompt, but the search still walks the typed keys and keeps only results that use the extra reading; else the beam fills with what the standard keys read (n: 你 / 那).
 - `valid` is only comparable between runs with the same loss: it includes the KL term with `--teacher`, and the boundary cost of the letters with `--key-weight`.
 - Before a full run of a new format: a few hundred steps, then `run_eval.py --limit 20` against the same 20 items of a known model.
 - Remote `pgrep -f` / `pkill -f`: the pattern must not appear in your own ssh command line, or it matches itself (a wait loop never ends, pkill kills your ssh).

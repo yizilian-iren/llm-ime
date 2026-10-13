@@ -99,7 +99,7 @@ class LLMEngine:
                         n = n.kids.setdefault(sy, Node())
                     if i not in n.words:
                         n.words.append(i)
-                        n.alt[i] = tuple((j, std) for j, (std, sy) in enumerate(zip(sylls, var)) if std != sy)
+                        n.alt[i] = tuple((j, std, sy) for j, (std, sy) in enumerate(zip(sylls, var)) if std != sy)
 
         def finish(n):
             for sy, k in n.kids.items():
@@ -114,8 +114,8 @@ class LLMEngine:
         abbrev_penalty per abbreviated char, plus split_penalty when its keys are cut short of a whole syllable
         the user typed. Also readings that do not follow the keys as the fine-tuned model learned them, each a fix
         (start, end, standard keys, cost) to the keys: with `swaps`, two adjacent keys inside the token read the
-        other way round (swap_penalty); with `alts`, a character read by one of EXTRA_READINGS (嗯 as en, -alt_bonus).
-        fixes[i] is the token's tuple of them (empty: read as typed)."""
+        other way round (swap_penalty); with `alts`, a character read by one of EXTRA_READINGS typed whole (嗯 as en,
+        not e; -alt_bonus), never in a swapped token. fixes[i] is the token's tuple of them (empty: read as typed)."""
         out = {}
         n = len(keys)
 
@@ -127,11 +127,10 @@ class LLMEngine:
                 for t in node.words:
                     alt, c = node.alt.get(t), ab
                     if alt:
-                        if not alts:
+                        if not alts or sw is not None or any(spans[i][1] != len(sy) for i, _std, sy in alt):
                             continue
                         c -= self.alt_bonus * len(alt)
-                        fix_t = fix + tuple((spans[i][0], spans[i][0] + spans[i][1], std[: spans[i][1]], -self.alt_bonus)
-                                            for i, std in alt)
+                        fix_t = tuple((spans[i][0], spans[i][0] + len(sy), std, -self.alt_bonus) for i, std, sy in alt)
                     else:
                         fix_t = fix
                     if out.get((q, t), (99,))[0] > c:
@@ -235,8 +234,9 @@ class LLMEngine:
         stop: called between beam steps; when it returns True the search is dropped and None returned.
         eos: False finishes a hypothesis as soon as it has consumed all keys, without the extra step that
           scores the end of the sentence (fine-tuned models only; base models never score it).
-        With swap_penalty, keys may also be read with two adjacent letters exchanged (see edges); for a fine-tuned
-        model a good enough swap reading costs a second search with the swapped keys in the prompt.
+        With swap_penalty, keys may also be read with two adjacent letters exchanged, and characters by EXTRA_READINGS
+        (see edges); for a fine-tuned model a good enough such reading costs a second search with the keys it learned
+        (swapped, or n for en) in the prompt.
         """
         self.paths = {}
         if not keys:
@@ -246,24 +246,24 @@ class LLMEngine:
             # a fixed reading of a text the typed keys also read as typed stays, and is no reason to search again
             found = [f if not f[3] or not self._reads(f[1], keys) else (*f[:3], ()) for f in found]
             best, todo = found[0][0], []
-            for score, _t, _path, fix in found:
-                if fix and score + sum(x[3] for x in fix) >= best - self.swap_margin and fix not in todo \
+            for score, _t, _path, fix in found:  # judged with alt_bonus, without swap_penalty
+                if fix and score + sum(x[3] for x in fix if x[3] > 0) >= best - self.swap_margin and fix not in todo \
                         and len(todo) < self.swap_retries:
                     todo.append(fix)
             if todo:
                 found = [f for f in found if not f[3]]
                 for fix in todo:
-                    fixed, back = _apply(keys, fix)
+                    swaps = [x for x in fix if x[3] > 0]
+                    swapped, cost = _apply(keys, swaps), sum(x[3] for x in swaps)
+                    alt = len(swaps) < len(fix)
                     pre = prefix if prefix and prefix[-1][1] <= min(x[0] for x in fix) else None  # keys left alone
-                    again = self._search(context, fixed, k, beam, mix, pre, stop, eos, fixes=False)
+                    # an extra reading (en for 嗯): the dictionary's (n) in the prompt, while the search still reads
+                    # the keys as typed (swaps made) and keeps only what reads one; alt_bonus is in its scores
+                    again = self._search(context, swapped, k, beam, mix, pre, stop, eos, fixes=False, alts=alt,
+                                         prompt_keys=_apply(keys, fix) if alt else None)
                     if again is None:
                         return None
-                    cost = sum(x[3] for x in fix)
-                    # an extra reading (en for 嗯) fixed to the dictionary's (n) stands for that character only
-                    alt = any(len(x[2]) != x[1] - x[0] for x in fix)
-                    swapped = _apply(keys, [x for x in fix if len(x[2]) == x[1] - x[0]])[0]
-                    found += [(score - cost, t, tuple((tid, back[e]) for tid, e in path), fix)
-                              for score, t, path, _ in again if not alt or self._reads(t, swapped, extra=True)]
+                    found += [(score - cost, t, path, fix) for score, t, path, f in again if f or not alt]
                     self.stats["swap_retries"] = self.stats.get("swap_retries", 0) + 1
                 found.sort(key=lambda f: f[:3], reverse=True)
         if found is None:
@@ -287,14 +287,16 @@ class LLMEngine:
                 return False
         return len(keys) in ends
 
-    def _search(self, context, keys, k, beam, mix, prefix, stop, eos, fixes):
+    def _search(self, context, keys, k, beam, mix, prefix, stop, eos, fixes, alts=None, prompt_keys=None):
         """The beam search of convert: finished hypotheses (score, text, path, fixes to the keys) best first,
-        or None when `stop` dropped it. The keys in the prompt are `keys`; `fixes`: readings that need fixes too."""
+        or None when `stop` dropped it. `fixes`: readings that need fixes too (`alts`: extra readings only).
+        The keys in the prompt are `prompt_keys`, by default `keys`."""
+        alts = fixes if alts is None else alts
         beam = beam or self.beam
         mix = bool(self.mix) and mix
         plain = context[-64:] if context.strip() else self.empty_prompt
         if self.keys_in_prompt:
-            self._prefill(fmt.prompt(context, keys, self.order))
+            self._prefill(fmt.prompt(context, prompt_keys or keys, self.order))
         else:
             self._prefill(plain)
         if mix:
@@ -307,7 +309,7 @@ class LLMEngine:
 
         def edges_at(p):
             if p not in edge_cache:
-                e = self.edges(keys, p, swaps=fixes, alts=fixes)
+                e = self.edges(keys, p, swaps=fixes, alts=alts)
                 ok = np.array([feasible[x] for x in e[0]], dtype=bool)
                 edge_cache[p] = tuple(x[ok] for x in e) if len(e[0]) else e
             return edge_cache[p]
@@ -415,11 +417,11 @@ class LLMEngine:
             self.mix.prefill(self.tok.encode(plain))
             mix_w = self.mix_weight if context.strip() else self.mix_weight_empty
         feasible = self.feasible(keys, swaps=False)  # as in convert, but no swaps: pieces are read as typed
-        ends, tids, abs_, _fix = self.edges(keys, 0, swaps=False)
+        ends, tids, abs_, fixes = self.edges(keys, 0, swaps=False)  # extra readings (嗯 as en) count, as typed
         ok = np.array([feasible[e] for e in ends], dtype=bool)
         if not ok.any():
             return []
-        ends, tids, abs_ = ends[ok], tids[ok], abs_[ok]
+        ends, tids, abs_, fixes = ends[ok], tids[ok], abs_[ok], fixes[ok]
         cols = np.unique(tids)
         lp = np.array(_log_softmax_cols(self._ctx_logits, mx.array(cols)))[0]
         if mix_w:
@@ -432,24 +434,19 @@ class LLMEngine:
             if t in seen:  # the same text read with fewer keys scores lower: keep the best reading
                 continue
             seen.add(t)
-            groups[(len(t) >= 2, bool(abs_[j] == 0))].append((t, int(ends[j])))
+            whole = abs(abs_[j] - sum(x[3] for x in fixes[j])) < 1e-6  # no abbreviated char (alt_bonus aside)
+            groups[(len(t) >= 2, whole)].append((t, int(ends[j])))
         whole = bool(groups[(True, True)] or groups[(False, True)])
         return groups[(True, whole)][:words] + groups[(False, whole)]
 
 
 def _apply(keys, fix):
-    """keys with the fixes (start, end, standard keys, cost) made, and for each position of those keys the
-    position in `keys` it stands for (a whole fixed span maps to its own start and end)."""
-    out, back, i = [], [], 0
+    """keys with the fixes (start, end, standard keys, cost) made."""
+    out, i = [], 0
     for s, e, new, _c in sorted(fix):
-        out += keys[i:s]
-        back += range(i, s)
-        out += new
-        back += [s + j if len(new) == e - s else s for j in range(len(new))]
+        out += keys[i:s] + new
         i = e
-    out += keys[i:]
-    back += range(i, len(keys) + 1)
-    return "".join(out), back
+    return "".join(out) + keys[i:]
 
 
 def _log_softmax_cols(logits, cols):
