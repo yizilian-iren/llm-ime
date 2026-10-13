@@ -4,6 +4,7 @@ Matching rule shared with the LLM engine: every character consumes a non-empty p
 readings, so the same lattice covers full pinyin, initials, and half-typed syllables.
 """
 
+import itertools
 import math
 import pickle
 import re
@@ -26,22 +27,37 @@ def toneless(r: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", r) if not unicodedata.combining(c))
 
 
-def char_readings_table() -> dict[str, list[str]]:
+# Readings people type that the dictionary lacks: character -> {typed reading: the dictionary's reading, which the
+# fine-tuned models learned it by}. From the user's WeChat text: 嗯 (216 times, 194 of them 嗯呢) is typed en.
+EXTRA_READINGS = {"嗯": {"en": "n"}}
+
+
+def char_readings_table(extra: bool = False) -> dict[str, list[str]]:
     table = {}
     for cp, rs in pinyin_dict.items():
         ch = chr(cp)
         if "一" <= ch <= "鿿":
             table[ch] = sorted({toneless(r) for r in rs.split(",")})
+    if extra:
+        for ch, alts in EXTRA_READINGS.items():
+            table[ch] = sorted(set(table.get(ch, ())) | set(alts))
     return table
 
 
+def with_extra(text: str, sylls: list[str]) -> list[list[str]]:
+    """sylls (one per character of text), and every variant with EXTRA_READINGS' typed readings in its place."""
+    choices = [[sy] + [a for a, std in EXTRA_READINGS.get(ch, {}).items() if std == sy] for ch, sy in zip(text, sylls)]
+    return [list(v) for v in itertools.product(*choices)]
+
+
 class Node:
-    __slots__ = ("kids", "by_letter", "words")
+    __slots__ = ("kids", "by_letter", "words", "alt")
 
     def __init__(self):
         self.kids: dict[str, Node] = {}
         self.by_letter: dict[str, list[str]] = {}
         self.words: list[str] = []
+        self.alt: dict = {}  # word -> ((syllable index, the dictionary's reading), ...) when only EXTRA_READINGS reach it here
 
 
 class NgramEngine:
@@ -61,14 +77,15 @@ class NgramEngine:
             h[0] += c
             h[1] += 1
         self.root = Node()
-        chars = char_readings_table()
+        chars = char_readings_table(extra=True)
         for ch, rs in chars.items():
             for r in rs:
                 self._insert([r], ch)
             self.uni.setdefault(ch, 0)
         for w in self.uni:
             if len(w) > 1 and w != BOS:
-                self._insert(syllables(w), w)
+                for sylls in with_extra(w, syllables(w)):
+                    self._insert(sylls, w)
         self._finish(self.root)
 
     def _insert(self, sylls, word):
