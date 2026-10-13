@@ -7,6 +7,7 @@ final class EngineClient {
     static let shared = EngineClient()
 
     static var socketPath: String {
+        if let p = ProcessInfo.processInfo.environment["LLMIME_SOCK"] { return p }  // tests (shell/build.sh keys)
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("llm-ime/engine.sock").path
     }

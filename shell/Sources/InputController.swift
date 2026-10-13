@@ -15,10 +15,18 @@ final class InputController: IMKInputController {
     private var stage = ""
     private var wantNextPage = false         // asked for the next page before the engine's further pages came
     private var shiftAlone = false
+    private var waiting: [NSEvent]?          // keys pressed while waiting for the engine's answer, in order
+    private var waitForFull = false          // waiting for the full answer (space), not only the first one
+    private var waitTimer: Timer?
+    private var noWaiting = false            // replaying after the engine did not answer: commit what there is
+    private var picked = false               // the user moved the selection: space commits that, no waiting
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
     }
+
+    var testClient: IMKTextInput?  // shell/tools/keys: IMK only takes its own client proxies
+    private var currentClient: IMKTextInput? { testClient ?? client() }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
         Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged]).rawValue)
@@ -31,6 +39,13 @@ final class InputController: IMKInputController {
         }
         guard event.type == .keyDown else { return false }
         shiftAlone = false
+        if waiting != nil {
+            if Self.replayable(event) {
+                waiting!.append(event)
+                return true
+            }
+            stopWaiting(client)  // a key only the app can act on: commit what there is first, keeping the order
+        }
         if Self.english { return false }
 
         let mods = event.modifierFlags.intersection([.command, .control, .option])
@@ -57,11 +72,13 @@ final class InputController: IMKInputController {
             return true
         case 49:  // space
             guard composing else { return false }
+            if waitForAnswer(event, full: true) { return true }
             commit(model.current ?? keys, client)
             return true
         case 123, 124:  // left / right move the selection, on into the next or previous page
             guard composing else { return false }
             model.move(event.keyCode == 123 ? -1 : 1)
+            picked = true
             show(client, fade: false)
             return true
         case 125, 121, 126, 116:  // down / page down, up / page up turn the page
@@ -81,6 +98,7 @@ final class InputController: IMKInputController {
                 return true
             }
             if composing, let n = Int(chars), (1...CandidateModel.pageSize).contains(n) {
+                if waitForAnswer(event) { return true }
                 if let c = model.slot(n) { commit(c, client) }
                 return true
             }
@@ -88,7 +106,8 @@ final class InputController: IMKInputController {
                 turnPage(chars == "=" ? 1 : -1, client)
                 return true
             }
-            if let p = Punctuation.chinese(for: chars, after: composing ? nil : lastChar(client)) {
+            if Self.replayable(event) && waitForAnswer(event) { return true }  // punctuation and the like
+            if Punctuation.chineseOn, let p = Punctuation.chinese(for: chars, after: composing ? nil : lastChar(client)) {
                 if composing { commitBest(client) }
                 insert(p, client)
                 return true
@@ -98,6 +117,74 @@ final class InputController: IMKInputController {
         return false
     }
 
+    // MARK: waiting for the engine's answer (4A.8)
+
+    /// A key that commits while there is no candidate yet (typed fast: "d" then space) waits for the engine's
+    /// first answer instead of committing the letters; space also waits for the full answer, up to 0.4 s, unless
+    /// the user picked a candidate (D-024: the quick guess's first is often wrong). Keys pressed meanwhile queue.
+    private func waitForAnswer(_ event: NSEvent, full: Bool = false) -> Bool {
+        guard !keys.isEmpty, !noWaiting, EngineClient.shared.connected else { return false }
+        let needFull = full && !picked && (stage == "" || stage == "quick")
+        guard model.candidates.isEmpty || needFull else { return false }
+        waiting = [event]
+        waitForFull = needFull
+        waitTimer?.invalidate()
+        waitTimer = Timer.scheduledTimer(withTimeInterval: needFull ? 0.4 : 1.0, repeats: false) { [weak self] _ in
+            self?.waitTimedOut()
+        }
+        return true
+    }
+
+    /// The full answer is late: commit the quick guess; with no answer at all, give the first one up to 1 s.
+    /// No answer by then: the letters, as without the engine.
+    private func waitTimedOut() {
+        guard let client = currentClient else { return }
+        if waitForFull && model.candidates.isEmpty {
+            waitForFull = false
+            waitTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
+                self?.waitTimedOut()
+            }
+            return
+        }
+        replay(client, force: true)
+    }
+
+    /// Keys that can wait in the queue: whatever ends up as text (letters, digits, punctuation, space).
+    /// Others (arrows, delete, return, shortcuts) only the app can act on, after the queue.
+    private static func replayable(_ event: NSEvent) -> Bool {
+        if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
+        if event.keyCode == 49 { return true }
+        guard let cs = event.characters, cs.unicodeScalars.count == 1, let c = cs.unicodeScalars.first else { return false }
+        return c.value >= 0x21 && c.value < 0x7f || c.value >= 0xa0 && !(0xf700...0xf8ff).contains(c.value)
+    }
+
+    /// Replays the queued keys in order; one that starts another wait takes the rest with it.
+    /// `force`: the first one commits what there is (the letters if no answer came) instead of waiting again.
+    private func replay(_ client: IMKTextInput, force: Bool = false) {
+        guard var rest = waiting else { return }
+        waiting = nil
+        waitTimer?.invalidate()
+        waitTimer = nil
+        var first = force
+        while !rest.isEmpty {
+            let e = rest.removeFirst()
+            noWaiting = first
+            first = false
+            let handled = handle(e, client: client)
+            noWaiting = false
+            if !handled, let cs = e.characters { insert(cs, client) }  // what the app would have typed
+            if waiting != nil {
+                waiting! += rest
+                return
+            }
+        }
+    }
+
+    /// Gives up waiting altogether: every queued key goes out now, each with what there is.
+    private func stopWaiting(_ client: IMKTextInput) {
+        while waiting != nil { replay(client, force: true) }
+    }
+
     /// Shift pressed and released with nothing in between toggles Chinese / English.
     private func flagsChanged(_ event: NSEvent, _ client: IMKTextInput) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -105,6 +192,7 @@ final class InputController: IMKInputController {
             shiftAlone = true
         } else if flags.isEmpty && shiftAlone {
             shiftAlone = false
+            stopWaiting(client)  // what was typed before the switch goes out as Chinese
             Self.english.toggle()
             if Self.english && !keys.isEmpty { commit(keys, client) }
         } else {
@@ -119,6 +207,7 @@ final class InputController: IMKInputController {
         client.setMarkedText(keys, selectionRange: NSRange(location: keys.utf16.count, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
         wantNextPage = false
+        picked = false
         let ctx = context ?? String(Self.history.suffix(64))
         requestId = EngineClient.shared.type(context: ctx, keys: keys)
         if model.candidates.isEmpty { return }  // the panel appears with the first answer
@@ -128,7 +217,7 @@ final class InputController: IMKInputController {
     /// The engine answers each key with stage "quick", then "full" (five), then after a pause "more": the full
     /// answer's five followed by further candidates, which only add pages (the page on screen stays as it is).
     func engineAnswered(id: Int, stage: String, candidates: [String]) {
-        guard id == requestId, !keys.isEmpty, let client = self.client() else { return }
+        guard id == requestId, !keys.isEmpty, let client = currentClient else { return }
         if stage == "more" {
             guard self.stage == "full" else { return }
             self.stage = stage
@@ -144,6 +233,10 @@ final class InputController: IMKInputController {
         self.stage = stage
         model.candidates = candidates
         model.selected = 0
+        if waiting != nil && !candidates.isEmpty && (!waitForFull || stage != "quick") {
+            replay(client)
+            if keys.isEmpty { return }
+        }
         show(client, fade: fade)
     }
 
@@ -154,6 +247,7 @@ final class InputController: IMKInputController {
             return
         }
         model.turn(step)
+        picked = true
         show(client, fade: false)
     }
 
@@ -187,6 +281,7 @@ final class InputController: IMKInputController {
         requestId = 0
         stage = ""
         wantNextPage = false
+        picked = false
         CandidatePanel.shared.hide()
     }
 
@@ -214,12 +309,16 @@ final class InputController: IMKInputController {
     // MARK: IMK
 
     override func commitComposition(_ sender: Any!) {
-        guard !keys.isEmpty, let client = sender as? IMKTextInput else { return }
-        commit(keys, client)
+        guard let client = sender as? IMKTextInput else { return }
+        stopWaiting(client)
+        if !keys.isEmpty { commit(keys, client) }
     }
 
     override func deactivateServer(_ sender: Any!) {
-        if let client = sender as? IMKTextInput, !keys.isEmpty { commit(keys, client) }
+        if let client = sender as? IMKTextInput {
+            stopWaiting(client)
+            if !keys.isEmpty { commit(keys, client) }
+        }
         CandidatePanel.shared.hide()
         super.deactivateServer(sender)
     }
@@ -238,7 +337,20 @@ final class InputController: IMKInputController {
             item.state = a == current ? .on : .off
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        for (i, title) in ["标点：英文", "标点：中文"].enumerated() {
+            let item = NSMenuItem(title: title, action: #selector(pickPunctuation(_:)), keyEquivalent: "")
+            item.tag = i
+            item.state = (i == 1) == Punctuation.chineseOn ? .on : .off
+            menu.addItem(item)
+        }
         return menu
+    }
+
+    @objc func pickPunctuation(_ sender: Any?) {
+        let item = (sender as? [String: Any])?[kIMKCommandMenuItemName] as? NSMenuItem ?? sender as? NSMenuItem
+        guard let tag = item?.tag else { return }
+        Punctuation.chineseOn = tag == 1
     }
 
     /// IMK sends menu actions with a dictionary holding the item.
@@ -249,8 +361,13 @@ final class InputController: IMKInputController {
     }
 }
 
-/// Chinese punctuation for the ASCII keys, while typing Chinese. After a digit, "." and "," stay ASCII (3.14, 1,000).
+/// Chinese punctuation for the ASCII keys, while typing Chinese, when chosen in the menu (default: the keys as
+/// they are, user 4A.9). After a digit, "." and "," stay ASCII (3.14, 1,000).
 enum Punctuation {
+    static var chineseOn: Bool {
+        get { UserDefaults.standard.string(forKey: "punctuation") == "chinese" }
+        set { UserDefaults.standard.set(newValue ? "chinese" : "english", forKey: "punctuation") }
+    }
     private static var openSingle = true, openDouble = true
     private static let map: [String: String] = [
         ",": "，", ".": "。", "?": "？", "!": "！", ";": "；", ":": "：", "\\": "、",

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppDelegate.active?.engineAnswered(id: id, stage: stage, candidates: cands)
         }
         EngineClient.shared.start()
+        _ = CandidatePanel.shared  // built now: built on the first key, it held up that key's answer (4A.8)
     }
 }
 
