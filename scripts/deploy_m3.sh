@@ -50,8 +50,10 @@ sed -e "s|@LABEL@|$LABEL|" -e "s|@ARGS@||" scripts/llm-ime.engine.plist.in | $SS
   P=\"\$HOME/Library/LaunchAgents/$LABEL.plist\"
   sed -e \"s|@REPO@/.venv|\$R/.venv|\" -e \"s|@REPO@|\$B/engine|\" -e \"s|@LOG@|\$L/engine.log|\" > \"\$P\"
   plutil -lint \"\$P\" >/dev/null
-  launchctl bootout gui/\$(id -u)/$LABEL 2>/dev/null || true
-  launchctl bootstrap gui/\$(id -u) \"\$P\""
+  D=gui/\$(id -u)
+  launchctl bootout \$D/$LABEL 2>/dev/null || true
+  for i in \$(seq 1 40); do launchctl print \$D/$LABEL >/dev/null 2>&1 || break; sleep 0.25; done  # bootout returns before it is gone
+  for i in 1 2 3 4 5; do launchctl bootstrap \$D \"\$P\" && break; [ \$i = 5 ] && exit 1; sleep 1; done"
 
 echo "== check"
 $SSH "set -e
