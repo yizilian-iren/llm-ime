@@ -36,9 +36,9 @@ struct CandidateModel: Equatable {
 /// It paints the glass tint itself; the blur under it is the window's NSVisualEffectView.
 final class CandidateView: NSView {
     static let corner: CGFloat = 10
-    static let pad: CGFloat = 2             // panel edge to the items: the selected one fills the window but this
+    static let pad: CGFloat = 0             // panel edge to the items: the selected one fills the window's height
     static let itemInset = NSSize(width: 6, height: 4)
-    static let itemCorner: CGFloat = corner - pad  // concentric with the window's corners
+    static let itemCorner: CGFloat = corner  // the first and last item's outer corners are the window's
     static let gap: CGFloat = 1             // between two items
     static let arrowsWidth: CGFloat = 22     // the faint ‹ › after the items when there are more pages
 
