@@ -54,18 +54,10 @@ final class CandidatePanel: NSObject {
         DispatchQueue.main.async { self.applyTheme() }
     }
 
-    /// The system's light / dark, read fresh from the global preferences (a background app's cached defaults and
-    /// effectiveAppearance can lag); with "Auto", where the key follows the time of day, the app's appearance.
+    /// The system's light / dark as AppKit draws it. Not the AppleInterfaceStyle default: on M3 (macOS 27) the
+    /// system was dark with that key absent. AppKit updates this on the theme notification, before ours arrives.
     private static var systemDark: Bool {
-        let any = kCFPreferencesAnyApplication
-        CFPreferencesAppSynchronize(any)
-        let style = CFPreferencesCopyValue("AppleInterfaceStyle" as CFString, any, kCFPreferencesCurrentUser,
-                                           kCFPreferencesAnyHost) as? String
-        let auto = CFPreferencesCopyValue("AppleInterfaceStyleSwitchesAutomatically" as CFString, any,
-                                          kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? Bool ?? false
-        if style == "Dark" { return true }
-        if auto { return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
-        return false
+        NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
     }
 
     private func applyTheme() {
