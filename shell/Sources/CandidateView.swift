@@ -37,10 +37,10 @@ struct CandidateModel: Equatable {
 final class CandidateView: NSView {
     static let corner: CGFloat = 10
     static let pad: CGFloat = 4             // panel edge to the items
-    static let itemInset = NSSize(width: 8, height: 5)
+    static let itemInset = NSSize(width: 6, height: 4)
     static let itemCorner: CGFloat = 6
-    static let gap: CGFloat = 2             // between two items
-    static let arrowsWidth: CGFloat = 26     // the faint ‹ › after the items when there are more pages
+    static let gap: CGFloat = 1             // between two items
+    static let arrowsWidth: CGFloat = 22     // the faint ‹ › after the items when there are more pages
 
     var theme = Theme.light { didSet { needsDisplay = true } }
     var model = CandidateModel() { didSet { needsDisplay = true } }
@@ -54,7 +54,7 @@ final class CandidateView: NSView {
     private func item(_ i: Int) -> NSAttributedString {
         let index = model.pageRange.lowerBound + i
         let s = NSMutableAttributedString(string: "\(i + 1)", attributes: [
-            .font: Self.indexFont, .kern: 5,
+            .font: Self.indexFont, .kern: 4,
             .foregroundColor: index == model.selected ? theme.mauve : theme.subtext0])
         s.append(NSAttributedString(string: model.candidates[index], attributes: [
             .font: Self.candFont, .foregroundColor: theme.text]))
