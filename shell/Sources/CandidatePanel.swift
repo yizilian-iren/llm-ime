@@ -3,7 +3,7 @@ import QuartzCore
 
 /// The floating candidate window (N-008): glass (behind-window blur + the view's tint), rounded,
 /// no border, never takes focus or clicks. One for the whole input method.
-final class CandidatePanel {
+final class CandidatePanel: NSObject {
     static let shared = CandidatePanel()
 
     private let panel: NSPanel
@@ -16,8 +16,8 @@ final class CandidatePanel {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "appearance"); applyTheme() }
     }
 
-    private init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 60),
+    private override init() {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 60),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -27,31 +27,50 @@ final class CandidatePanel {
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
 
-        glass = NSVisualEffectView()
+        let glass = NSVisualEffectView()
         glass.material = .popover
         glass.blendingMode = .behindWindow
         glass.state = .active
         glass.maskImage = Self.roundedMask(radius: CandidateView.corner)
         glass.autoresizingMask = [.width, .height]
 
-        view = CandidateView()
+        let view = CandidateView()
         view.wantsLayer = true
         view.autoresizingMask = [.width, .height]
         glass.addSubview(view)
         panel.contentView = glass
+        (self.panel, self.glass, self.view) = (panel, glass, view)
+        super.init()
 
+        // The input method is never the active app, and distributed notifications to inactive apps are held
+        // back by default: ask for them at once. show() also reads the appearance each time, in case one is missed.
         DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil, queue: .main
-        ) { [weak self] _ in self?.applyTheme() }
+            self, selector: #selector(themeChanged), name: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil, suspensionBehavior: .deliverImmediately)
         applyTheme()
     }
 
+    @objc private func themeChanged(_ note: Notification) {
+        DispatchQueue.main.async { self.applyTheme() }
+    }
+
+    /// The system's light / dark, read fresh from the global preferences (a background app's cached defaults and
+    /// effectiveAppearance can lag); with "Auto", where the key follows the time of day, the app's appearance.
     private static var systemDark: Bool {
-        UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+        let any = kCFPreferencesAnyApplication
+        CFPreferencesAppSynchronize(any)
+        let style = CFPreferencesCopyValue("AppleInterfaceStyle" as CFString, any, kCFPreferencesCurrentUser,
+                                           kCFPreferencesAnyHost) as? String
+        let auto = CFPreferencesCopyValue("AppleInterfaceStyleSwitchesAutomatically" as CFString, any,
+                                          kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? Bool ?? false
+        if style == "Dark" { return true }
+        if auto { return NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
+        return false
     }
 
     private func applyTheme() {
-        let theme = appearance.theme(systemDark: Self.systemDark)
+        let theme = appearance.theme(systemDark: appearance == .system && Self.systemDark)
+        if view.theme.dark == theme.dark && glass.appearance != nil { return }
         view.theme = theme
         glass.appearance = NSAppearance(named: theme.dark ? .darkAqua : .aqua)
     }
@@ -62,6 +81,7 @@ final class CandidatePanel {
         if model.candidates.isEmpty {
             if !panel.isVisible { return }  // nothing to show yet: wait for the first answer
         }
+        if !panel.isVisible { applyTheme() }
         if fade, let layer = view.layer {
             let t = CATransition()
             t.type = .fade
