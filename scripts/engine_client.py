@@ -24,7 +24,7 @@ def main():
     ap.add_argument("--context", default="")
     ap.add_argument("--sock", default=DEFAULT_SOCK)
     ap.add_argument("--check", action="store_true")
-    ap.add_argument("--k", type=int, default=20, help="the service's --k, for --check")
+    ap.add_argument("--k", type=int, default=5, help="the service's --k, for --check")
     ap.add_argument("--timeout", type=float, default=30)
     a = ap.parse_args()
 

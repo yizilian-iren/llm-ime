@@ -8,10 +8,14 @@ do not starve each other. The worker takes each tag's newest request in turn and
      with the mixed-in model too, since without it the quick guess agrees with the full search far less
      often (3A.2: 63% vs 40% of keys); top 3 only, and without the extra step that scores the end of the
      sentence (both cut its time by about a quarter for 1 point of agreement);
-  2. full: the engine's normal search; dropped between beam steps as soon as a newer keystroke arrives.
+  2. full: the engine's normal search (k candidates); dropped between beam steps as soon as a newer keystroke
+     arrives;
+  3. more (when `more` > k): after a pause of `more_delay` s with nothing else to do, the search again for
+     `more` candidates, sent as the full answer's k followed by the new ones (so the first page stays put);
+     dropped as soon as any request arrives. Typing is not slowed by it (k=20 for the full search was: 4A.5).
 Keys that cannot all be read as pinyin (a typo) still get candidates: the longest prefix that can is
 converted and the rest of the letters follow as typed (4A.4).
-`on_result(context, keys, candidates, stage)` is called from the worker thread with stage "quick" / "full",
+`on_result(context, keys, candidates, stage)` is called from the worker thread with stage "quick" / "full" / "more",
 and with `tag=` too when the request had one. An exception while converting goes to `on_error()` (called in
 the except block; default: print the traceback) and the worker goes on with the next request.
 All model work stays on the worker thread (MLX state is not shared between threads).
@@ -22,8 +26,9 @@ import traceback
 
 
 class Session:
-    def __init__(self, engine, on_result, k=5, quick=None, on_error=None):
+    def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25):
         self.engine, self.on_result, self.k = engine, on_result, k
+        self.more, self.more_delay = more, more_delay
         self.on_error = on_error or traceback.print_exc
         self.quick = quick or dict(k=3, beam=3, mix=True, eos=False)  # convert() options of the quick guess
         self._cond = threading.Condition()
@@ -76,6 +81,20 @@ class Session:
             return
         self._remember(context, keys, full)
         send(context, keys, full, "full")
+        if not self.more or self.more <= self.k or len(full) < self.k:
+            return
+        with self._cond:
+            self._cond.wait_for(lambda: self._pending or self._closed, timeout=self.more_delay)
+            if self._pending or self._closed:
+                return  # someone is typing: the extra pages can wait
+        more = self._convert(context, keys, k=self.more, stop=self._busy)
+        if more is None:
+            return
+        send(context, keys, full + [c for c in more if c not in full], "more")
+
+    def _busy(self):
+        with self._cond:
+            return bool(self._pending) or self._closed
 
     def _quick(self, context, keys):
         prefix = None

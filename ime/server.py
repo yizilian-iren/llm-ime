@@ -5,7 +5,8 @@
 Loads the engine, then listens on a Unix socket (default ~/Library/Application Support/llm-ime/engine.sock).
 One JSON object per line, both ways:
   -> {"id": 7, "context": "下班以后，", "keys": "jintian"}      (op "type" may be left out)
-  <- {"id": 7, "stage": "quick", "candidates": [...]}           then the same id with stage "full"
+  <- {"id": 7, "stage": "quick", "candidates": [...]}           then the same id with stage "full" (--k of them),
+                                                                 and after a pause "more" (--more: full's first)
   -> {"op": "commit", "text": "今天"}                            what was committed; kept in memory as context
   -> {"op": "ping", "id": 8}   <- {"id": 8, "op": "pong"}
 A request whose context is missing or null uses the text committed through this service since it started.
@@ -61,9 +62,9 @@ class Conn:
 
 
 class Server:
-    def __init__(self, engine, k=5):
+    def __init__(self, engine, k=5, more=None):
         self.committed = ""  # recent committed text, in memory only
-        self.session = Session(engine, self._on_result, k=k, on_error=lambda: log_error("conversion"))
+        self.session = Session(engine, self._on_result, k=k, more=more, on_error=lambda: log_error("conversion"))
 
     def _on_result(self, context, keys, cands, stage, tag):
         latest = tag.latest
@@ -131,7 +132,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sock", default=DEFAULT_SOCK)
     ap.add_argument("--engine", default="v02")
-    ap.add_argument("--k", type=int, default=20, help="candidates of the full search (the shell pages them)")
+    ap.add_argument("--k", type=int, default=5, help="candidates of the full search")
+    ap.add_argument("--more", type=int, default=20, help="candidates after a pause, for the shell's further pages")
     a = ap.parse_args()
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # model paths are repo-relative
 
@@ -139,7 +141,7 @@ def main():
     eng = engines.load(a.engine)
     eng.convert("", "nihao", k=1)  # first call compiles; do it before the shell waits on it
     log(f"loaded {a.engine} in {time.time() - t:.1f}s")
-    server = Server(eng, k=a.k)
+    server = Server(eng, k=a.k, more=a.more)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # launchd stops it with SIGTERM: remove the socket
     s = listen(a.sock)
     log(f"listening on {a.sock}")

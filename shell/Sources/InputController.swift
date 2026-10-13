@@ -13,6 +13,7 @@ final class InputController: IMKInputController {
     private var model = CandidateModel()
     private var requestId = 0
     private var stage = ""
+    private var wantNextPage = false         // asked for the next page before the engine's further pages came
     private var shiftAlone = false
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
@@ -65,8 +66,7 @@ final class InputController: IMKInputController {
             return true
         case 125, 121, 126, 116:  // down / page down, up / page up turn the page
             guard composing else { return false }
-            model.turn(event.keyCode == 125 || event.keyCode == 121 ? 1 : -1)
-            show(client, fade: false)
+            turnPage(event.keyCode == 125 || event.keyCode == 121 ? 1 : -1, client)
             return true
         default:
             break
@@ -85,8 +85,7 @@ final class InputController: IMKInputController {
                 return true
             }
             if composing && (chars == "=" || chars == "-") {  // = / - turn the page
-                model.turn(chars == "=" ? 1 : -1)
-                show(client, fade: false)
+                turnPage(chars == "=" ? 1 : -1, client)
                 return true
             }
             if let p = Punctuation.chinese(for: chars, after: composing ? nil : lastChar(client)) {
@@ -119,19 +118,43 @@ final class InputController: IMKInputController {
     private func update(_ client: IMKTextInput) {
         client.setMarkedText(keys, selectionRange: NSRange(location: keys.utf16.count, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
+        wantNextPage = false
         let ctx = context ?? String(Self.history.suffix(64))
         requestId = EngineClient.shared.type(context: ctx, keys: keys)
         if model.candidates.isEmpty { return }  // the panel appears with the first answer
         show(client, fade: false)
     }
 
+    /// The engine answers each key with stage "quick", then "full" (five), then after a pause "more": the full
+    /// answer's five followed by further candidates, which only add pages (the page on screen stays as it is).
     func engineAnswered(id: Int, stage: String, candidates: [String]) {
         guard id == requestId, !keys.isEmpty, let client = self.client() else { return }
+        if stage == "more" {
+            guard self.stage == "full" else { return }
+            self.stage = stage
+            model.candidates = candidates
+            if wantNextPage {
+                wantNextPage = false
+                model.turn(1)
+            }
+            show(client, fade: false)
+            return
+        }
         let fade = stage == "full" && self.stage == "quick" && !model.candidates.isEmpty
         self.stage = stage
         model.candidates = candidates
         model.selected = 0
         show(client, fade: fade)
+    }
+
+    /// Turns the page; a next page the engine has not sent yet is turned to when it comes.
+    private func turnPage(_ step: Int, _ client: IMKTextInput) {
+        if step > 0 && !model.hasNext && stage == "full" {
+            wantNextPage = true
+            return
+        }
+        model.turn(step)
+        show(client, fade: false)
     }
 
     private func show(_ client: IMKTextInput, fade: Bool) {
@@ -163,6 +186,7 @@ final class InputController: IMKInputController {
         model = CandidateModel()
         requestId = 0
         stage = ""
+        wantNextPage = false
         CandidatePanel.shared.hide()
     }
 

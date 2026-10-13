@@ -2,7 +2,7 @@
 
   python scripts/bench_session.py [--engine v02] [--items 40] [--interval 150]
 
-On the first --items eval items (initials form):
+On the first --items eval items (--form, initials by default):
   step:   one key at a time, waiting for the full result each time: quick / full latency per key, and how
           often the quick guess's first candidate is the full search's first candidate.
   typing: keys arrive every --interval ms. Time from the last key to its quick and full results, for the Session
@@ -47,12 +47,19 @@ def main():
     ap.add_argument("--engine", default="v02")
     ap.add_argument("--items", type=int, default=40)
     ap.add_argument("--interval", type=float, default=150)
+    ap.add_argument("--form", default="initials", choices=["initials", "full", "mixed"], help="which keys of each item")
+    ap.add_argument("--quick-beam", type=int, default=None, help="beam of the quick guess (Session's default if not given)")
     a = ap.parse_args()
     eng = engines.load(a.engine)
     items = [json.loads(line) for line in open("data/private/eval.jsonl")][: a.items]
 
     rec = Recorder()
-    ses = Session(eng, rec)
+    quick = None
+    if a.quick_beam:
+        quick = dict(k=3, beam=a.quick_beam, mix=True, eos=False)
+    ses = Session(eng, rec, quick=quick)
+    for r in items:
+        r["initials"] = r[a.form]  # the rest of the script reads "initials"
     ses.type(items[0]["context"], items[0]["initials"])  # warm up
     rec.wait_full(items[0]["initials"])
 
