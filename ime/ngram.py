@@ -6,6 +6,7 @@ readings, so the same lattice covers full pinyin, initials, and half-typed sylla
 
 import itertools
 import math
+import os
 import pickle
 import re
 import unicodedata
@@ -42,6 +43,20 @@ def char_readings_table(extra: bool = False) -> dict[str, list[str]]:
         for ch, alts in EXTRA_READINGS.items():
             table[ch] = sorted(set(table.get(ch, ())) | set(alts))
     return table
+
+
+CHAR_FREQ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "char_freq.tsv")
+
+
+def char_logp(path=CHAR_FREQ) -> dict[str, float]:
+    """log relative frequency of each Han character in LCCC (everyday conversation, simplified): 我 high, 沃 low,
+    traditional and rare characters lowest (scripts/build_char_freq.py)."""
+    counts = {}
+    for line in open(path, encoding="utf-8"):
+        ch, c = line.rstrip("\n").split("\t")
+        counts[ch] = int(c)
+    total = sum(counts.values())
+    return {ch: math.log(c / total) for ch, c in counts.items()}
 
 
 def with_extra(text: str, sylls: list[str]) -> list[list[str]]:

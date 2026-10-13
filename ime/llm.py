@@ -19,9 +19,10 @@ from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache
 
 from ime import fmt
-from ime.ngram import EXTRA_READINGS, Node, char_readings_table, with_extra
+from ime.ngram import EXTRA_READINGS, Node, char_logp, char_readings_table, with_extra
 
 MAX_COMBOS = 16  # reading combinations per token (polyphones multiply)
+SINGLE_PAGE = 5  # one whole syllable typed: this many of its characters come before any other candidate
 
 
 class LLMEngine:
@@ -30,7 +31,7 @@ class LLMEngine:
     def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
                  empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
                  split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
-                 swap_retries=1, alt_bonus=0.0):
+                 swap_retries=1, alt_bonus=0.0, single_weight=0.0):
         self.model, self.tok = load(model)
         self.mix = _Cached(load(mix)[0]) if mix else None
         # With no context the mixed-in model is only guessing: it gets its own (usually smaller) weight.
@@ -62,6 +63,10 @@ class LLMEngine:
         self.swap_margin, self.swap_retries = float(swap_margin), int(swap_retries)
         # alt_bonus: nats credited per character read by EXTRA_READINGS (嗯 as en: the user writes 嗯 216 times, 恩 once)
         self.alt_bonus = float(alt_bonus)
+        # single_weight: keys that are one whole syllable (wo, zai, hen) list its characters first, by how common
+        # they are (ngram.char_freq) plus single_weight x the model's score; 0 leaves them to the search
+        self.single_weight = float(single_weight)
+        self.char_logp = char_logp() if self.single_weight else {}
         self.root, self.tok_text = self._token_trie(model)
         self._ids, self._ctx_cache, self._ctx_logits = [], None, None
         self.stats = {"forward_ms": 0.0, "calls": 0}
@@ -236,7 +241,8 @@ class LLMEngine:
           scores the end of the sentence (fine-tuned models only; base models never score it).
         With swap_penalty, keys may also be read with two adjacent letters exchanged, and characters by EXTRA_READINGS
         (see edges); for a fine-tuned model a good enough such reading costs a second search with the keys it learned
-        (swapped, or n for en) in the prompt.
+        (swapped, or n for en) in the prompt. With single_weight, keys that are one whole syllable put its common
+        characters first (_single_first).
         """
         self.paths = {}
         if not keys:
@@ -273,16 +279,57 @@ class LLMEngine:
             if t not in self.paths:
                 self.paths[t] = path
                 out.append(t)
+        if self.single_weight and keys in self.syllables and any(v in keys for v in "aeiouv"):
+            out = self._single_first(context, keys, mix, out)
         return out[:k]
 
-    def _reads(self, text, keys, extra=False):
+    def _single_first(self, context, keys, mix, out):
+        """For keys that are one whole syllable: its characters ranked by log frequency + single_weight x their
+        score at the first step (as in segments, alt_bonus included) first, SINGLE_PAGE of them and only GB2312
+        ones; then the search's
+        other candidates that read the keys as whole syllables (西安 for xian), the rest of those characters, and
+        last what abbreviates a syllable (河南 for hen as he + n, 真爱 for zai). Without the n / ng / m of 嗯 呣:
+        n is mostly the start of ni."""
+        n = len(keys)
+        plain = context[-64:] if context.strip() else self.empty_prompt
+        self._prefill(fmt.prompt(context, keys, self.order) if self.keys_in_prompt else plain)
+        mix_w = 0
+        if self.mix and mix:
+            self.mix.prefill(self.tok.encode(plain))
+            mix_w = self.mix_weight if context.strip() else self.mix_weight_empty
+        ends, tids, abs_, fixes = self.edges(keys, 0, swaps=False)
+        ok = np.array([e == n and len(self.tok_text[int(t)]) == 1 and abs(a - sum(x[3] for x in f)) < 1e-6
+                       for e, t, a, f in zip(ends, tids, abs_, fixes)], dtype=bool)
+        if not ok.any():
+            return out
+        tids, abs_ = tids[ok], abs_[ok]
+        cols = np.unique(tids)
+        lp = np.array(_log_softmax_cols(self._ctx_logits, mx.array(cols)))[0]
+        if mix_w:
+            lp = lp + mix_w * np.array(_log_softmax_cols(self.mix.ctx_logits, mx.array(cols)))[0]
+        floor = min(self.char_logp.values())
+        score = [self.single_weight * (lp[np.searchsorted(cols, t)] - a) + self.char_logp.get(self.tok_text[int(t)], floor)
+                 for t, a in zip(tids, abs_)]
+        singles = []
+        for j in np.argsort(score, kind="stable")[::-1]:
+            t = self.tok_text[int(tids[j])]
+            if t not in singles:
+                singles.append(t)
+                self.paths.setdefault(t, ((int(tids[j]), n),))
+        page = [t for t in singles if _gb2312(t)][:SINGLE_PAGE]  # not 妳 載 楽 (traditional, variants) up front
+        whole = [t for t in out if t not in page and self._reads(t, keys, extra=True, whole=True)]
+        rest = [t for t in singles if t not in page and t not in whole]
+        return page + whole + rest + [t for t in out if t not in page and t not in whole and t not in rest]
+
+    def _reads(self, text, keys, extra=False, whole=False):
         """Whether `keys` read as `text` with no swap: each character a non-empty prefix of one of its readings
-        (with `extra`, EXTRA_READINGS' too)."""
+        (with `extra`, EXTRA_READINGS' too; with `whole`, the whole reading)."""
         table = self.char_readings_extra if extra else self.char_readings
         ends = {0}
         for ch in text:
             rs = table.get(ch, ())
-            ends = {e + L for e in ends for r in rs for L in range(1, len(r) + 1) if keys[e : e + L] == r[:L]}
+            ends = {e + L for e in ends for r in rs for L in range(len(r) if whole else 1, len(r) + 1)
+                    if keys[e : e + L] == r[:L]}
             if not ends:
                 return False
         return len(keys) in ends
@@ -447,6 +494,14 @@ def _apply(keys, fix):
         out += keys[i:s] + new
         i = e
     return "".join(out) + keys[i:]
+
+
+def _gb2312(text):
+    try:
+        text.encode("gb2312")
+        return True
+    except UnicodeEncodeError:
+        return False
 
 
 def _log_softmax_cols(logits, cols):

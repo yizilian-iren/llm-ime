@@ -32,6 +32,7 @@ def load(name: str, **kw) -> Engine:
         cfg = dict(model="models/r2-4bit", mix="models/qwen3-0.6b-base-4bit", mix_weight=1.0, mix_weight_empty=0.5,
                    split_penalty=9.0,  # ma read as 命啊 / 没啊 instead of 吗 (user on M3, v0.4)
                    swap_penalty=3.0,  # zhognguo read as 中国 (5B.1)
-                   alt_bonus=6.0)  # en read as 嗯: enne 嗯呢, enen 嗯嗯 first, en 嗯 in the top 3 (5B.4)
+                   alt_bonus=6.0,  # en read as 嗯: enne 嗯呢, enen 嗯嗯 first, en 嗯 in the top 3 (5B.4)
+                   single_weight=0.6)  # one syllable typed: common characters first, wo 我 not 沃 (5B.5)
         return LLMEngine(**{**cfg, **kw})
     raise ValueError(f"unknown engine {name}")

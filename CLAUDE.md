@@ -8,4 +8,4 @@
 - Remote `pgrep -f` / `pkill -f`: the pattern must not appear in your own ssh command line, or it matches itself (a wait loop never ends, pkill kills your ssh).
 - dgx is unified memory: `--mem-frac 0.4` and `scripts/memguard.sh 12` beside training. Look at `nvidia-smi` on lab4090 / lab4090b first: other projects' training fills them.
 - The input method (`shell/`) builds on M4 with the CLT's `swiftc` (`shell/build.sh`, no Xcode); `scripts/deploy_m3.sh` installs it and the engine service on M3 from HEAD (commit first). Top-level Swift code only compiles in a file named `main.swift`.
-- The engine service on M3 runs `git archive` code from `~/Library/Application Support/llm-ime/engine`, not the repo there; the repo only lends `.venv` and `models`.
+- The engine service on M3 runs `git archive` code from `~/Library/Application Support/llm-ime/engine`, not the repo there; the repo only lends `.venv` and `models`. Anything else the engine reads at run time must be committed (`ime/char_freq.tsv`); `data/` is not there.
