@@ -3,7 +3,7 @@
   .venv/bin/python scripts/engine_client.py jintianqunachifan [--context 下班以后，] [--sock PATH] [--check]
 
 Sends the growing key string after each quick answer, prints every answer with its time, and fails unless
-every key got a quick answer and the last key a full one. --check also loads the engine here and fails
+every key got a quick answer and the last key a full one, none of them empty. --check also loads the engine here and fails
 unless the full answer's first page (5) equals engine.convert(context, keys) (what the repl shows).
 """
 
@@ -55,6 +55,8 @@ def main():
             r = recv()
             if r.get("id") != i or r.get("stage") != stage:
                 sys.exit(f"key {i}: expected {stage}, got {r}")
+            if not r["candidates"]:
+                sys.exit(f"key {i}: {stage} answer is empty")
             print(f"{keys:24} {stage:5} {(time.perf_counter() - t) * 1000:6.0f} ms  {len(r['candidates']):2}  {' '.join(r['candidates'][:5])}")
             if stage == "full":
                 full = r["candidates"]

@@ -9,8 +9,9 @@ One JSON object per line, both ways:
   -> {"op": "commit", "text": "今天"}                            what was committed; kept in memory as context
   -> {"op": "ping", "id": 8}   <- {"id": 8, "op": "pong"}
 A request whose context is missing or null uses the text committed through this service since it started.
-Only the newest request is answered: older ones still being converted are dropped (ime.session).
-All model work runs on the Session's one worker thread, whichever connection asked.
+Each connection gets answers to its newest request only: its older ones still being converted are dropped
+(ime.session, tagged by connection, so a second client does not starve the shell). All model work runs on the
+Session's one worker thread, whichever connection asked.
 
 Nothing the user types is logged or written to disk; the log has times, connections and errors only.
 """
@@ -48,6 +49,7 @@ class Conn:
     def __init__(self, sock):
         self.sock = sock
         self.lock = threading.Lock()
+        self.latest = None  # (id, context, keys) of its newest type request
 
     def send(self, obj):
         data = (json.dumps(obj, ensure_ascii=False) + "\n").encode()
@@ -60,18 +62,14 @@ class Conn:
 
 class Server:
     def __init__(self, engine, k=5):
-        self.lock = threading.Lock()
-        self.latest = None  # (conn, id, context, keys) of the newest type request
         self.committed = ""  # recent committed text, in memory only
-        self.session = Session(engine, self._on_result, k=k)
+        self.session = Session(engine, self._on_result, k=k, on_error=lambda: log_error("conversion"))
 
-    def _on_result(self, context, keys, cands, stage):
-        with self.lock:
-            latest = self.latest
-        if latest is None or (latest[2], latest[3]) != (context, keys):
-            return  # a newer request is queued; only its results matter
-        conn, rid = latest[0], latest[1]
-        conn.send({"id": rid, "stage": stage, "candidates": cands})
+    def _on_result(self, context, keys, cands, stage, tag):
+        latest = tag.latest
+        if latest is None or (latest[1], latest[2]) != (context, keys):
+            return  # a newer request of this connection is queued; only its results matter
+        tag.send({"id": latest[0], "stage": stage, "candidates": cands})
 
     def handle(self, conn, msg):
         op = msg.get("op", "type")
@@ -80,9 +78,8 @@ class Server:
             if context is None:
                 context = self.committed
             context, keys = context[-CONTEXT_CHARS:], msg.get("keys", "")
-            with self.lock:
-                self.latest = (conn, msg.get("id"), context, keys)
-            self.session.type(context, keys)
+            conn.latest = (msg.get("id"), context, keys)
+            self.session.type(context, keys, tag=conn)
         elif op == "commit":
             self.committed = (self.committed + msg.get("text", ""))[-CONTEXT_CHARS:]
         elif op == "ping":
@@ -111,9 +108,7 @@ class Server:
         except OSError:
             pass
         finally:
-            with self.lock:
-                if self.latest and self.latest[0] is conn:
-                    self.latest = None
+            conn.latest = None
             sock.close()
             log("shell disconnected")
 
