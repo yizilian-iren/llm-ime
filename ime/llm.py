@@ -28,7 +28,8 @@ class LLMEngine:
     name = "llm"
 
     def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
-                 empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None):
+                 empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
+                 split_penalty=0.0):
         self.model, self.tok = load(model)
         self.mix = _Cached(load(mix)[0]) if mix else None
         # With no context the mixed-in model is only guessing: it gets its own (usually smaller) weight.
@@ -45,6 +46,10 @@ class LLMEngine:
         # consumed more of the input are not out-ranked just for having paid for more characters.
         self.beam, self.alpha, self.beta, self.empty_prompt = beam, abbrev_penalty, progress_bonus, empty_prompt
         self.prefixes = {r[:i] for rs in char_readings_table().values() for r in rs for i in range(1, len(r) + 1)}
+        # split_penalty: nats more for an abbreviated character whose keys, read one key further or more,
+        # are a whole syllable (ma read as 命啊 / 没啊 instead of 吗); real initials (jt of 今天) never pay it.
+        self.syllables = {r for rs in char_readings_table().values() for r in rs}
+        self.split_penalty = float(split_penalty)
         self.root, self.tok_text = self._token_trie(model)
         self._ids, self._ctx_cache, self._ctx_logits = [], None, None
         self.stats = {"forward_ms": 0.0, "calls": 0}
@@ -82,7 +87,8 @@ class LLMEngine:
         return root, text
 
     def edges(self, keys, p):
-        """{(end, token_id): fewest abbreviated chars} for tokens starting at key position p."""
+        """{(end, token_id): lowest cost} for tokens starting at key position p: abbrev_penalty per abbreviated
+        char, plus split_penalty when its keys are cut short of a whole syllable the user typed."""
         out = {}
 
         def walk(node, q, ab):
@@ -97,9 +103,14 @@ class LLMEngine:
                 while m < len(sy) and q + m < len(keys) and keys[q + m] == sy[m]:
                     m += 1
                 for L in range(1, m + 1):
-                    walk(kid, q + L, ab + (L < len(sy)))
+                    cost = 0.0
+                    if L < len(sy):
+                        cost = self.alpha
+                        if self.split_penalty and any(keys[q:j] in self.syllables for j in range(q + L + 1, min(q + 7, len(keys) + 1))):
+                            cost += self.split_penalty
+                    walk(kid, q + L, ab + cost)
 
-        walk(self.root, p, 0)
+        walk(self.root, p, 0.0)
         ends = np.array([e for e, _ in out], dtype=np.int32)
         tids = np.array([t for _, t in out], dtype=np.int32)
         abs_ = np.array(list(out.values()), dtype=np.float32)
@@ -215,7 +226,7 @@ class LLMEngine:
                 ends, tids, abs_ = edges_at(p)
                 if len(tids) == 0:
                     continue
-                cand_s.append(score + lp[b, col_of(tids)] - self.alpha * abs_)
+                cand_s.append(score + lp[b, col_of(tids)] - abs_)
                 cand_parent.append(np.full(len(tids), b))
                 cand_tid.append(tids)
                 cand_end.append(ends)
