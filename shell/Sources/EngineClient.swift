@@ -12,8 +12,9 @@ final class EngineClient {
         return base.appendingPathComponent("llm-ime/engine.sock").path
     }
 
-    /// Called on the main thread with (request id, stage "quick" / "full", candidates).
-    var onResult: ((Int, String, [String]) -> Void)?
+    /// Called on the main thread with (request id, stage "quick" / "full" / "more", candidates, segments): with
+    /// "more", candidates for the start of the keys and how many keys each uses (4A.10); otherwise none.
+    var onResult: ((Int, String, [String], [(String, Int)]) -> Void)?
     private(set) var connected = false  // read on the main thread
 
     private let queue = DispatchQueue(label: "llm-ime.engine")
@@ -102,7 +103,11 @@ final class EngineClient {
                 guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                       let id = obj["id"] as? Int, let stage = obj["stage"] as? String,
                       let cands = obj["candidates"] as? [String] else { continue }
-                DispatchQueue.main.async { self.onResult?(id, stage, cands) }
+                let segs = (obj["segments"] as? [[Any]] ?? []).compactMap { s -> (String, Int)? in
+                    guard s.count == 2, let t = s[0] as? String, let n = s[1] as? Int else { return nil }
+                    return (t, n)
+                }
+                DispatchQueue.main.async { self.onResult?(id, stage, cands, segs) }
             }
         }
         queue.async { if self.fd == s { self.disconnect() } }

@@ -21,6 +21,9 @@ final class CandidatePanel: NSObject {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "appearance"); applyTheme() }
     }
 
+    /// The accent of the current light / dark (the marked keys' underline).
+    var accent: NSColor { appearance.theme(systemDark: appearance == .system && Self.systemDark).mauve }
+
     private static let materials: [String: NSVisualEffectView.Material] = [
         "popover": .popover, "menu": .menu, "hudWindow": .hudWindow, "underWindowBackground": .underWindowBackground,
         "fullScreenUI": .fullScreenUI, "sidebar": .sidebar, "headerView": .headerView, "sheet": .sheet,

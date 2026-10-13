@@ -273,6 +273,47 @@ class LLMEngine:
                 out.append(t)
         return out[:k]
 
+    def segments(self, context, keys, words=30):
+        """Candidates for the start of `keys` only, for picking a sentence piece by piece (4A.10): [(text, keys used)],
+        words of two or more characters first (at most `words`), then every single character of the first syllable.
+        Each is one token starting at key 0, scored like convert's first step (same prompt, so its cache is reused;
+        one log-softmax, no forward), the rest of the keys left readable. Readings that abbreviate a syllable count
+        only when nothing reads whole syllables (wmxz: 我们; xian: not 仙女 as xia + n; de: not 第二). Words longer than one
+        token, and characters the tokenizer has no token for, are not among them.
+        """
+        n = len(keys)
+        if not n:
+            return []
+        plain = context[-64:] if context.strip() else self.empty_prompt
+        self._prefill(fmt.prompt(context, keys, self.order) if self.keys_in_prompt else plain)
+        mix_w = 0
+        if self.mix:
+            self.mix.prefill(self.tok.encode(plain))
+            mix_w = self.mix_weight if context.strip() else self.mix_weight_empty
+        feasible = [False] * n + [True]  # as in convert
+        for p in range(n - 1, -1, -1):
+            feasible[p] = any(feasible[p + L] for L in range(1, min(6, n - p) + 1) if keys[p : p + L] in self.prefixes)
+        ends, tids, abs_ = self.edges(keys, 0)
+        ok = np.array([feasible[e] for e in ends], dtype=bool)
+        if not ok.any():
+            return []
+        ends, tids, abs_ = ends[ok], tids[ok], abs_[ok]
+        cols = np.unique(tids)
+        lp = np.array(_log_softmax_cols(self._ctx_logits, mx.array(cols)))[0]
+        if mix_w:
+            lp = lp + mix_w * np.array(_log_softmax_cols(self.mix.ctx_logits, mx.array(cols)))[0]
+        score = lp[np.searchsorted(cols, tids)] - abs_
+        groups = {(w, whole): [] for w in (True, False) for whole in (True, False)}  # (word?, whole syllables?)
+        seen = set()
+        for j in np.argsort(-score, kind="stable"):
+            t = self.tok_text[int(tids[j])]
+            if t in seen:  # the same text read with fewer keys scores lower: keep the best reading
+                continue
+            seen.add(t)
+            groups[(len(t) >= 2, bool(abs_[j] == 0))].append((t, int(ends[j])))
+        whole = bool(groups[(True, True)] or groups[(False, True)])
+        return groups[(True, whole)][:words] + groups[(False, whole)]
+
 
 def _log_softmax_cols(logits, cols):
     """log_softmax(logits)[:, cols] as float32, computed as the whole-vocab version was (same rounding)."""

@@ -10,13 +10,16 @@ do not starve each other. The worker takes each tag's newest request in turn and
      sentence (both cut its time by about a quarter for 1 point of agreement);
   2. full: the engine's normal search (k candidates); dropped between beam steps as soon as a newer keystroke
      arrives;
-  3. more (when `more` > k): after a pause of `more_delay` s with nothing else to do, the search again for
-     `more` candidates, sent as the full answer's k followed by the new ones (so the first page stays put);
-     dropped as soon as any request arrives. Typing is not slowed by it (k=20 for the full search was: 4A.5).
+  3. more (when `more` > k, or with `segments`): after a pause of `more_delay` s with nothing else to do, the
+     search again for `more` candidates, sent as the full answer's k followed by the new ones (so the first
+     page stays put); dropped as soon as any request arrives. Typing is not slowed by it (k=20 for the full
+     search was: 4A.5). With `segments`, it also carries the engine's candidates for the start of the keys
+     (engine.segments: [(text, keys used)], 4A.10) as `segments=`, leaving out those that use all the keys
+     and are already among the whole candidates.
 Keys that cannot all be read as pinyin (a typo) still get candidates: the longest prefix that can is
 converted and the rest of the letters follow as typed (4A.4).
 `on_result(context, keys, candidates, stage)` is called from the worker thread with stage "quick" / "full" / "more",
-and with `tag=` too when the request had one. An exception while converting goes to `on_error()` (called in
+with `tag=` too when the request had one, and `segments=` with "more" when `segments` is on. An exception while converting goes to `on_error()` (called in
 the except block; default: print the traceback) and the worker goes on with the next request.
 All model work stays on the worker thread (MLX state is not shared between threads).
 """
@@ -26,9 +29,10 @@ import traceback
 
 
 class Session:
-    def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25):
+    def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False):
         self.engine, self.on_result, self.k = engine, on_result, k
         self.more, self.more_delay = more, more_delay
+        self.segments = segments and hasattr(engine, "segments")
         self.on_error = on_error or traceback.print_exc
         self.quick = quick or dict(k=3, beam=3, mix=True, eos=False)  # convert() options of the quick guess
         self._cond = threading.Condition()
@@ -68,7 +72,7 @@ class Session:
                 self.on_error()
 
     def _serve(self, context, keys, tag):
-        send = (lambda *a: self.on_result(*a, tag=tag)) if tag is not None else self.on_result
+        send = (lambda *a, **kw: self.on_result(*a, tag=tag, **kw)) if tag is not None else self.on_result
         if not keys:
             send(context, keys, [], "full")
             return
@@ -81,16 +85,26 @@ class Session:
             return
         self._remember(context, keys, full)
         send(context, keys, full, "full")
-        if not self.more or self.more <= self.k or len(full) < self.k:
+        more = bool(self.more) and self.more > self.k and len(full) >= self.k
+        if not more and not self.segments:
             return
         with self._cond:
             self._cond.wait_for(lambda: self._pending or self._closed, timeout=self.more_delay)
             if self._pending or self._closed:
                 return  # someone is typing: the extra pages can wait
-        more = self._convert(context, keys, k=self.more, stop=self._busy)
-        if more is None:
+        whole = full
+        if more:
+            extra = self._convert(context, keys, k=self.more, stop=self._busy)
+            if extra is None:
+                return
+            whole = full + [c for c in extra if c not in full]
+        if not self.segments:
+            send(context, keys, whole, "more")
             return
-        send(context, keys, full + [c for c in more if c not in full], "more")
+        if self._busy():
+            return
+        segs = [(t, e) for t, e in self.engine.segments(context, keys) if e < len(keys) or t not in whole]
+        send(context, keys, whole, "more", segments=segs)
 
     def _busy(self):
         with self._cond:

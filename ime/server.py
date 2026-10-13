@@ -6,7 +6,9 @@ Loads the engine, then listens on a Unix socket (default ~/Library/Application S
 One JSON object per line, both ways:
   -> {"id": 7, "context": "下班以后，", "keys": "jintian"}      (op "type" may be left out)
   <- {"id": 7, "stage": "quick", "candidates": [...]}           then the same id with stage "full" (--k of them),
-                                                                 and after a pause "more" (--more: full's first)
+                                                                 and after a pause "more" (--more: full's first),
+                                                                 with "segments": [["今天", 6], ...]: candidates for
+                                                                 the start of the keys and how many keys each uses
   -> {"op": "commit", "text": "今天"}                            what was committed; kept in memory as context
   -> {"op": "ping", "id": 8}   <- {"id": 8, "op": "pong"}
 A request whose context is missing or null uses the text committed through this service since it started.
@@ -64,13 +66,17 @@ class Conn:
 class Server:
     def __init__(self, engine, k=5, more=None):
         self.committed = ""  # recent committed text, in memory only
-        self.session = Session(engine, self._on_result, k=k, more=more, on_error=lambda: log_error("conversion"))
+        self.session = Session(engine, self._on_result, k=k, more=more, segments=True,
+                               on_error=lambda: log_error("conversion"))
 
-    def _on_result(self, context, keys, cands, stage, tag):
+    def _on_result(self, context, keys, cands, stage, tag, segments=None):
         latest = tag.latest
         if latest is None or (latest[1], latest[2]) != (context, keys):
             return  # a newer request of this connection is queued; only its results matter
-        tag.send({"id": latest[0], "stage": stage, "candidates": cands})
+        msg = {"id": latest[0], "stage": stage, "candidates": cands}
+        if segments is not None:
+            msg["segments"] = [[t, e] for t, e in segments]
+        tag.send(msg)
 
     def handle(self, conn, msg):
         op = msg.get("op", "type")

@@ -18,6 +18,8 @@ func check(_ ok: Bool, _ what: String, line: Int = #line) {
 struct Engine {
     static var quick: Double? = 0.05   // seconds to the quick guess; nil: never
     static var full: Double? = 0.25
+    static var more: Double? = nil     // the pause's answer, with candidates for the start of the keys (4A.10)
+    static var contexts: [String: String] = [:]  // keys -> the context they came with (read on the main thread)
 }
 let sock = NSTemporaryDirectory() + "llmime-keys-\(getpid()).sock"
 setenv("LLMIME_SOCK", sock, 1)
@@ -36,10 +38,11 @@ Thread.detachNewThread {
     let fd = accept(listener, nil, nil)
     var buf = Data()
     var chunk = [UInt8](repeating: 0, count: 4096)
-    func reply(_ id: Int, _ stage: String, _ cands: [String], after: Double?) {
+    func reply(_ id: Int, _ stage: String, _ cands: [String], after: Double?, extra: [String: Any] = [:]) {
         guard let after = after else { return }
         writes.asyncAfter(deadline: .now() + after) {
-            var d = try! JSONSerialization.data(withJSONObject: ["id": id, "stage": stage, "candidates": cands] as [String: Any])
+            let msg = ["id": id, "stage": stage, "candidates": cands].merging(extra) { a, _ in a } as [String: Any]
+            var d = try! JSONSerialization.data(withJSONObject: msg)
             d.append(0x0a)
             _ = d.withUnsafeBytes { send(fd, $0.baseAddress!, $0.count, 0) }
         }
@@ -53,8 +56,12 @@ Thread.detachNewThread {
             buf = Data(buf[(nl + 1)...])
             guard let m = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   let id = m["id"] as? Int, let k = m["keys"] as? String else { continue }
+            let ctx = m["context"] as? String ?? ""
+            DispatchQueue.main.async { Engine.contexts[k] = ctx }
             reply(id, "quick", ["Q:" + k, "Q2:" + k], after: Engine.quick)
             reply(id, "full", ["F:" + k, "F2:" + k], after: Engine.full)
+            reply(id, "more", ["F:" + k, "F2:" + k], after: Engine.more,
+                  extra: ["segments": [["S" + k.prefix(2), 2], ["W" + k, k.count]]])
         }
     }
 }
@@ -101,7 +108,9 @@ let client = FakeClient()
 let ctl = InputController(server: nil, delegate: nil, client: nil)!
 ctl.testClient = client
 AppDelegate.active = ctl
-EngineClient.shared.onResult = { id, stage, cands in ctl.engineAnswered(id: id, stage: stage, candidates: cands) }
+EngineClient.shared.onResult = { id, stage, cands, segs in
+    ctl.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs)
+}
 EngineClient.shared.start()
 
 func wait(_ s: Double) { RunLoop.main.run(until: Date(timeIntervalSinceNow: s)) }
@@ -181,6 +190,27 @@ check(client.marked == "da" && client.markedStyle as? Int == NSUnderlineStyle.si
       "marked text with a single underline: \(client.marked) \(String(describing: client.markedStyle))")
 press(["return"])
 wait(1)
+
+// 4A.10: after a pause, candidates for the start of the keys follow the whole ones; picking one commits only
+// it, and the rest of the keys get candidates of their own, after what was just committed.
+Engine.quick = 0.05; Engine.full = 0.1; Engine.more = 0.2
+client.text = ""
+press(letters("abcd")); wait(0.5)
+check(client.marked == "abcd", "composing abcd: \(client.marked)")
+press(["3"])  // F:abcd, F2:abcd, then Sab (2 keys), Wabcd (all keys)
+check(client.text == "Sab" && client.marked == "cd", "picked the start: \(client.text) + marked \(client.marked)")
+wait(0.5)
+check(Engine.contexts["cd"]?.hasSuffix("Sab") == true, "the rest comes after what was committed: \(Engine.contexts["cd"] ?? "-")")
+press(["space"]); wait(0.3)
+check(client.text == "SabF:cd" && client.marked.isEmpty, "then the rest: \(client.text)")
+client.text = ""
+press(letters("abcd")); wait(0.5); press(["4"])
+check(client.text == "Wabcd", "one that uses all the keys commits as a whole: \(client.text)")
+client.text = ""
+press(letters("abcd")); wait(0.5); press(["right", "right", ","])
+check(client.text == "F:abcd,", "punctuation with the start selected: the best whole one: \(client.text)")
+Engine.more = nil
+wait(0.5)
 
 // 4A.9: Chinese punctuation when chosen in the menu.
 Engine.quick = 0.05; Engine.full = 0.25

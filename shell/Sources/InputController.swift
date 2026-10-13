@@ -20,6 +20,7 @@ final class InputController: IMKInputController {
     private var waitTimer: Timer?
     private var noWaiting = false            // replaying after the engine did not answer: commit what there is
     private var picked = false               // the user moved the selection: space commits that, no waiting
+    private var segmentEnds: [Int] = []      // after the whole candidates: the keys each start-of-keys one uses
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
@@ -73,7 +74,7 @@ final class InputController: IMKInputController {
         case 49:  // space
             guard composing else { return false }
             if waitForAnswer(event, full: true) { return true }
-            commit(model.current ?? keys, client)
+            commitSelected(model.selected, client)
             return true
         case 123, 124:  // left / right move the selection, on into the next or previous page
             guard composing else { return false }
@@ -99,7 +100,7 @@ final class InputController: IMKInputController {
             }
             if composing, let n = Int(chars), (1...CandidateModel.pageSize).contains(n) {
                 if waitForAnswer(event) { return true }
-                if let c = model.slot(n) { commit(c, client) }
+                if model.slot(n) != nil { commitSelected(model.pageRange.lowerBound + n - 1, client) }
                 return true
             }
             if composing && (chars == "=" || chars == "-") {  // = / - turn the page
@@ -204,10 +205,12 @@ final class InputController: IMKInputController {
     // MARK: composing
 
     private func update(_ client: IMKTextInput) {
-        // A thin underline only (user: 「不出这个蓝色的」). A plain string, or IMK's raw-text style, has no underline
-        // of its own, and each app draws its default: Chromium-based ones a thick underline on a blue background.
+        // A thin underline only (user: 「不出这个蓝色的」), in the accent (「怎么不用紫色的线」). A plain string, or IMK's
+        // raw-text style, has no underline of its own, and each app draws its default: Chromium-based ones a thick
+        // underline on a blue background.
         let marked = NSAttributedString(string: keys, attributes: [
-            .underlineStyle: NSUnderlineStyle.single.rawValue, .markedClauseSegment: 0])
+            .underlineStyle: NSUnderlineStyle.single.rawValue, .underlineColor: CandidatePanel.shared.accent,
+            .markedClauseSegment: 0])
         client.setMarkedText(marked, selectionRange: NSRange(location: keys.utf16.count, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
         wantNextPage = false
@@ -219,13 +222,15 @@ final class InputController: IMKInputController {
     }
 
     /// The engine answers each key with stage "quick", then "full" (five), then after a pause "more": the full
-    /// answer's five followed by further candidates, which only add pages (the page on screen stays as it is).
-    func engineAnswered(id: Int, stage: String, candidates: [String]) {
+    /// answer's five followed by further candidates, which only add pages (the page on screen stays as it is),
+    /// and after those the candidates for the start of the keys (4A.10), so the pages do not run out.
+    func engineAnswered(id: Int, stage: String, candidates: [String], segments: [(String, Int)] = []) {
         guard id == requestId, !keys.isEmpty, let client = currentClient else { return }
         if stage == "more" {
             guard self.stage == "full" else { return }
             self.stage = stage
-            model.candidates = candidates
+            model.candidates = candidates + segments.map { $0.0 }
+            segmentEnds = segments.map { $0.1 }
             if wantNextPage {
                 wantNextPage = false
                 model.turn(1)
@@ -236,6 +241,7 @@ final class InputController: IMKInputController {
         let fade = stage == "full" && self.stage == "quick" && !model.candidates.isEmpty
         self.stage = stage
         model.candidates = candidates
+        segmentEnds = []
         model.selected = 0
         if waiting != nil && !candidates.isEmpty && (!waitForFull || stage != "quick") {
             replay(client)
@@ -259,8 +265,33 @@ final class InputController: IMKInputController {
         CandidatePanel.shared.show(model, below: cursorLine(client), fade: fade)
     }
 
+    /// Before a key that is not ours: the selection, but the best whole candidate if that is only the start.
     private func commitBest(_ client: IMKTextInput) {
-        commit(model.current ?? keys, client)
+        commit(segmentEnd(model.selected) == nil ? model.current ?? keys : model.candidates.first ?? keys, client)
+    }
+
+    /// The keys candidate `i` uses when it is one for the start of the keys only (nil: the whole keys).
+    private func segmentEnd(_ i: Int) -> Int? {
+        let j = i - (model.candidates.count - segmentEnds.count)
+        guard segmentEnds.indices.contains(j), segmentEnds[j] < keys.count else { return nil }
+        return segmentEnds[j]
+    }
+
+    /// Commits candidate `i`. One for the start of the keys commits only itself (4A.10): the rest of the keys stay
+    /// marked and get candidates of their own, after the context plus what was just committed.
+    private func commitSelected(_ i: Int, _ client: IMKTextInput) {
+        guard model.candidates.indices.contains(i) else { return commit(keys, client) }
+        let text = model.candidates[i]
+        guard let end = segmentEnd(i) else { return commit(text, client) }
+        insert(text, client)
+        EngineClient.shared.commit(text)
+        keys = String(keys.dropFirst(end))
+        if context != nil { context! += text }
+        model = CandidateModel()
+        segmentEnds = []
+        stage = ""
+        CandidatePanel.shared.hide()  // back with the first answer for the rest
+        update(client)
     }
 
     private func commit(_ text: String, _ client: IMKTextInput) {
@@ -282,6 +313,7 @@ final class InputController: IMKInputController {
         keys = ""
         context = nil
         model = CandidateModel()
+        segmentEnds = []
         requestId = 0
         stage = ""
         wantNextPage = false
