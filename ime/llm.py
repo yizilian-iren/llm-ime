@@ -23,6 +23,7 @@ from ime.ngram import EXTRA_READINGS, Node, char_logp, char_readings_table, with
 
 MAX_COMBOS = 16  # reading combinations per token (polyphones multiply)
 SINGLE_PAGE = 5  # one whole syllable typed: this many of its characters come before any other candidate
+TRAD_CHARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trad_chars.txt")  # scripts/build_trad_chars.py
 
 
 class LLMEngine:
@@ -286,6 +287,7 @@ class LLMEngine:
             if t not in self.paths:
                 self.paths[t] = path
                 out.append(t)
+        out = _simplified_first(out)  # 這樣 after 这样 / 着养 / 遮阳 / 蒸养 (5B.7)
         if single:
             out = self._single_first(context, keys, mix, out)
         return out[:k]
@@ -478,7 +480,8 @@ class LLMEngine:
 
     def segments(self, context, keys, words=30):
         """Candidates for the start of `keys` only, for picking a sentence piece by piece (4A.10): [(text, keys used)],
-        words of two or more characters first (at most `words`), then every single character of the first syllable.
+        words of two or more characters first (at most `words`), then every single character of the first syllable;
+        those with a traditional-only character last.
         Each is one token starting at key 0, scored like convert's first step (same prompt, so its cache is reused;
         one log-softmax, no forward), the rest of the keys left readable. Readings that abbreviate a syllable count
         only when nothing reads whole syllables (wmxz: 我们; xian: not 仙女 as xia + n; de: not 第二). Words longer than one
@@ -514,7 +517,7 @@ class LLMEngine:
             whole = abs(abs_[j] - sum(x[3] for x in fixes[j])) < 1e-6  # no abbreviated char (alt_bonus aside)
             groups[(len(t) >= 2, whole)].append((t, int(ends[j])))
         whole = bool(groups[(True, True)] or groups[(False, True)])
-        return groups[(True, whole)][:words] + groups[(False, whole)]
+        return _simplified_first(groups[(True, whole)][:words] + groups[(False, whole)], lambda s: s[0])  # 這樣 說 last (5B.7)
 
 
 def _apply(keys, fix):
@@ -524,6 +527,19 @@ def _apply(keys, fix):
         out += keys[i:s] + new
         i = e
     return "".join(out) + keys[i:]
+
+
+_TRAD = None
+
+
+def _simplified_first(texts, text=lambda t: t):
+    """texts with those whose text(t) has a traditional-only character (ime/trad_chars.txt: 這 樣, not 乾 於 啰)
+    moved to the end, order kept otherwise."""
+    global _TRAD
+    if _TRAD is None:
+        _TRAD = frozenset("".join(line.strip() for line in open(TRAD_CHARS, encoding="utf-8") if not line.startswith("#")))
+    trad = [any(c in _TRAD for c in text(t)) for t in texts]
+    return [t for t, x in zip(texts, trad) if not x] + [t for t, x in zip(texts, trad) if x]
 
 
 def _gb2312(text):
