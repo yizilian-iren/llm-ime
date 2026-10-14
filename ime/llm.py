@@ -247,6 +247,13 @@ class LLMEngine:
         self.paths = {}
         if not keys:
             return []
+        single = self.single_weight and keys in self.syllables and any(v in keys for v in "aeiouv")
+        if single and k <= SINGLE_PAGE:
+            # the first k are its characters whatever the search finds: no search (5B.6: wo, hen 40-80 ms -> 2-4 on M4)
+            page = self._single_first(context, keys, mix, [])
+            if len(page) >= k and all(_gb2312(t) for t in page[:k]):  # else page is short: the search comes next
+                return page[:k]
+            self.paths = {}
         found = self._search(context, keys, k, beam, mix, prefix, stop, eos, fixes=True)
         if found and self.keys_in_prompt:
             # a fixed reading of a text the typed keys also read as typed stays, and is no reason to search again
@@ -279,7 +286,7 @@ class LLMEngine:
             if t not in self.paths:
                 self.paths[t] = path
                 out.append(t)
-        if self.single_weight and keys in self.syllables and any(v in keys for v in "aeiouv"):
+        if single:
             out = self._single_first(context, keys, mix, out)
         return out[:k]
 
@@ -366,6 +373,7 @@ class LLMEngine:
         mix_w = (self.mix_weight if context.strip() else self.mix_weight_empty) if mix else 0
         active = [(0.0, "", 0, (), ())]  # (score, text, key position, path, fixes)
         cache = mix_cache = None
+        mix_rows = [0] if mix_w else []  # the rows of active that mix_logits has, in its order
         if prefix and prefix[-1][1] <= n and feasible[prefix[-1][1]]:
             path = tuple(prefix)
             cache = self._fork_cache(mx.array([0]), len(path) + n + 2)
@@ -385,12 +393,12 @@ class LLMEngine:
             cols = np.unique(np.concatenate([edges_at(p)[1] for p in pos] + [np.array([self.eos], np.int32)]))
             col_of = lambda t: np.searchsorted(cols, t)  # noqa: E731
             lp = _log_softmax_cols(logits, mx.array(cols))
-            if mix_w:
+            if mix_w and mix_rows:
                 mlp = _log_softmax_cols(mix_logits, mx.array(cols))
                 mx.eval(lp, mlp)
                 lp, mlp = np.array(lp), np.array(mlp)
                 eos_lp = lp[:, col_of(self.eos)].copy()
-                lp = lp + mix_w * mlp
+                lp[mix_rows] += mix_w * mlp
                 lp[:, col_of(self.eos)] = eos_lp
             else:
                 lp = np.array(lp)
@@ -411,22 +419,38 @@ class LLMEngine:
                 break
             S, P, T, E, W = (np.concatenate(x) for x in (cand_s, cand_parent, cand_tid, cand_end, cand_sw))
             order = np.argsort(-(S + self.beta * E))
+
+            def grown(j):  # (score, text, path, fixes) of candidate j; only built for the ones kept
+                h = active[P[j]]
+                return float(S[j]), h[1] + self.tok_text[int(T[j])], h[3] + ((int(T[j]), int(E[j])),), h[4] + W[j]
+
+            finish_now = not (self.keys_in_prompt and eos)  # else one more step scores the end of the sentence
             nxt, parents, tids = [], [], []
-            for j in order:
-                text = active[P[j]][1] + self.tok_text[int(T[j])]
-                path = active[P[j]][3] + ((int(T[j]), int(E[j])),)
-                fix = active[P[j]][4] + W[j]
-                if E[j] == n and not (self.keys_in_prompt and eos):
-                    finished.append((float(S[j]), text, path, fix))
+            for i, j in enumerate(order):
+                if E[j] == n and finish_now:
+                    finished.append(grown(j))
                 elif len(nxt) < beam:
-                    nxt.append((float(S[j]), text, int(E[j]), path, fix))
+                    s, text, path, fix = grown(j)
+                    nxt.append((s, text, int(E[j]), path, fix))
                     parents.append(int(P[j]))
                     tids.append(int(T[j]))
-                if len(nxt) >= beam and len(finished) >= k * 3:
+                if len(nxt) >= beam:  # the beam is full: only finished ones still count, up to k * 3 of them
+                    if finish_now and len(finished) < k * 3:
+                        rest = order[i + 1 :]
+                        finished += [grown(j) for j in rest[E[rest] == n][: k * 3 - len(finished)]]
                     break
             finished.sort(key=lambda f: f[:3], reverse=True)
             if not nxt or (len(finished) >= k and finished[k - 1][0] >= max(h[0] for h in nxt)):
                 break
+            texts = list(dict.fromkeys(f[1] for f in finished))
+            if len(texts) >= k:
+                # a beam waiting for its end-of-sentence score, already below the k-th text finished, stays below it:
+                # no forward for it (5B.6: about an eighth of the rows). Not one with a fix, which may still be
+                # searched again (convert).
+                floor = next(f[0] for f in finished if f[1] == texts[k - 1])
+                keep = [i for i, h in enumerate(nxt) if h[2] < n or h[4] or h[0] > floor]
+                if len(keep) < len(nxt):
+                    nxt, parents, tids = [nxt[i] for i in keep], [parents[i] for i in keep], [tids[i] for i in keep]
             idx = mx.array(parents)
             if cache is None:
                 cache = self._fork_cache(idx, n + 2)
@@ -434,12 +458,18 @@ class LLMEngine:
                 self._reorder(cache, idx)
             t0 = time.perf_counter()
             logits = self.model(mx.array(tids)[:, None], cache=cache)[:, -1, :]
-            if mix_w:
-                mix_cache = self.mix.fork(idx, n + 2) if mix_cache is None else (self._reorder(mix_cache, idx) or mix_cache)
-                mix_logits = self.mix.model(mx.array(tids)[:, None], cache=mix_cache)[:, -1, :]
+            # the mixed-in model only for the beams with keys left: the others wait for the end-of-sentence score,
+            # which is the first model's alone
+            rows = [i for i, h in enumerate(nxt) if h[2] < n] if mix_w else []
+            if rows:
+                at = {a: i for i, a in enumerate(mix_rows)}
+                midx = mx.array([at[parents[i]] for i in rows])
+                mix_cache = self.mix.fork(midx, n + 2) if mix_cache is None else (self._reorder(mix_cache, midx) or mix_cache)
+                mix_logits = self.mix.model(mx.array([tids[i] for i in rows])[:, None], cache=mix_cache)[:, -1, :]
                 mx.eval(logits, mix_logits)
             else:
                 mx.eval(logits)
+            mix_rows = rows
             self.stats["forward_ms"] += (time.perf_counter() - t0) * 1000
             self.stats["calls"] += 1
             active = nxt
