@@ -154,7 +154,13 @@ def main():
     ap.add_argument("--k", type=int, default=5, help="candidates of the full search")
     ap.add_argument("--more", type=int, default=20, help="candidates after a pause, for the shell's further pages")
     ap.add_argument("--words", default=userwords.DEFAULT_PATH, help="the user's word list (5A.3); '' for none")
+    # MLX keeps freed buffers for reuse without a limit: 3.7 GB on M3 for 670 MB of models (4A.7). 256 MB: on M4
+    # 1.3 GB after typing bench_keys twice, against 3.0 GB without.
+    ap.add_argument("--cache-mb", type=int, default=256, help="MLX buffer cache limit (-1: MLX's default)")
     a = ap.parse_args()
+    if a.cache_mb >= 0:
+        import mlx.core as mx
+        mx.set_cache_limit(a.cache_mb << 20)
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # model paths are repo-relative
 
     t = time.time()
