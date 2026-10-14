@@ -7,6 +7,8 @@
 #   ~/Library/Application Support/llm-ime/engine/   this commit's ime/ and scripts/ (git archive), models -> repo
 #   ~/Library/LaunchAgents/com.llm-ime.engine.plist the service, run with the repo's .venv
 #   ~/Library/Logs/llm-ime/engine.log               its log (times and errors only)
+#   ~/Library/LaunchAgents/com.llm-ime.summary.plist the typing log's summary, hourly (5A.2)
+#   ~/Library/Application Support/llm-ime/log/      the typing log and its summaries (the shell writes it)
 # The repo there (~/Projects/llm-ime) only lends its .venv and models; missing model files are copied in.
 # M3's ssh is restricted (no pty, no forwarding): everything below is one non-interactive command each.
 set -e
@@ -16,6 +18,7 @@ cd "$(dirname "$0")/.."
 REPO_M3='$HOME/Projects/llm-ime'
 BASE_M3='$HOME/Library/Application Support/llm-ime'
 LABEL=com.llm-ime.engine
+SUMMARY=com.llm-ime.summary
 MODELS="r2-4bit qwen3-0.6b-base-4bit"  # what engine v02 loads
 
 git diff --quiet HEAD -- ime scripts shell || { echo "commit ime/ scripts/ shell/ first: the engine is deployed from HEAD" >&2; exit 1; }
@@ -44,16 +47,22 @@ tar -C shell/build -cf - LLMIME.app | $SSH "set -e
   rm -rf \"\$D/LLMIME.app\"; mv \"\$D/LLMIME.app.new/LLMIME.app\" \"\$D/LLMIME.app\"; rmdir \"\$D/LLMIME.app.new\"
   pkill -x LLMIME || true"  # macOS starts the new one the next time it is used
 
-echo "== service"
-sed -e "s|@LABEL@|$LABEL|" -e "s|@ARGS@||" scripts/llm-ime.engine.plist.in | $SSH "set -e
+# install_agent LABEL TEMPLATE LOGNAME: fills in the template and (re)loads it as a LaunchAgent.
+install_agent() {
+  sed -e "s|@LABEL@|$1|" -e "s|@ARGS@||" "$2" | $SSH "set -e
   B=\"$BASE_M3\"; R=\"$REPO_M3\"; L=\"\$HOME/Library/Logs/llm-ime\"; mkdir -p \"\$L\" \"\$HOME/Library/LaunchAgents\"
-  P=\"\$HOME/Library/LaunchAgents/$LABEL.plist\"
-  sed -e \"s|@REPO@/.venv|\$R/.venv|\" -e \"s|@REPO@|\$B/engine|\" -e \"s|@LOG@|\$L/engine.log|\" > \"\$P\"
+  P=\"\$HOME/Library/LaunchAgents/$1.plist\"
+  sed -e \"s|@REPO@/.venv|\$R/.venv|\" -e \"s|@REPO@|\$B/engine|\" -e \"s|@LOG@|\$L/$3|\" > \"\$P\"
   plutil -lint \"\$P\" >/dev/null
   D=gui/\$(id -u)
-  launchctl bootout \$D/$LABEL 2>/dev/null || true
-  for i in \$(seq 1 40); do launchctl print \$D/$LABEL >/dev/null 2>&1 || break; sleep 0.25; done  # bootout returns before it is gone
+  launchctl bootout \$D/$1 2>/dev/null || true
+  for i in \$(seq 1 40); do launchctl print \$D/$1 >/dev/null 2>&1 || break; sleep 0.25; done  # bootout returns before it is gone
   for i in 1 2 3 4 5; do launchctl bootstrap \$D \"\$P\" && break; [ \$i = 5 ] && exit 1; sleep 1; done"
+}
+
+echo "== service"
+install_agent $LABEL scripts/llm-ime.engine.plist.in engine.log
+install_agent $SUMMARY scripts/llm-ime.summary.plist.in summary.log
 
 echo "== check"
 $SSH "set -e

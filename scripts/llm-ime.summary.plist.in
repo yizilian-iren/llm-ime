@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The typing log's daily summary (5A.2): scripts/typing_summary.py every hour, for the days whose summary is out
+     of date. scripts/deploy_m3.sh fills in @LABEL@, @REPO@ and @LOG@. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>@LABEL@</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@REPO@/.venv/bin/python</string>
+        <string>scripts/typing_summary.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>@REPO@</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>@LOG@</string>
+</dict>
+</plist>

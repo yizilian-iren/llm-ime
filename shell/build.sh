@@ -3,7 +3,7 @@
 #   shell/build.sh            the input method
 #   shell/build.sh mock DIR   also the candidate window mock, rendered light / dark into DIR
 #   shell/build.sh test       also the candidate paging test
-#   shell/build.sh keys       also the key handling test (InputController against a fake engine; shows the panel)
+#   shell/build.sh keys       also the key handling and typing log test (InputController against a fake engine; shows the panel)
 set -e
 cd "$(dirname "$0")"
 B=build
@@ -25,7 +25,8 @@ if [ "$1" = mock ]; then
 fi
 if [ "$1" = keys ]; then
   swiftc -O -framework AppKit -framework InputMethodKit Sources/Theme.swift Sources/CandidateView.swift \
-    Sources/CandidatePanel.swift Sources/EngineClient.swift Sources/InputController.swift tools/keys/main.swift -o $B/tools/keys
+    Sources/CandidatePanel.swift Sources/EngineClient.swift Sources/InputController.swift Sources/TypingLog.swift \
+    tools/keys/main.swift -o $B/tools/keys
   $B/tools/keys
 fi
 if [ "$1" = test ]; then

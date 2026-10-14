@@ -21,6 +21,11 @@ final class InputController: IMKInputController {
     private var noWaiting = false            // replaying after the engine did not answer: commit what there is
     private var picked = false               // the user moved the selection: space commits that, no waiting
     private var segmentEnds: [Int] = []      // after the whole candidates: the keys each start-of-keys one uses
+    private var comp: Composition?           // this composition, for the typing log (5A.2); nil: not logged
+    private var waitStart = Date()
+    private var logged: ([String: Any], Date)?  // the last commit's record, written at the next key but delete
+    private var deletesAfter = 0             // deletes right after that commit (it was wrong)
+    private var loggedTimer: Timer?
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
@@ -40,6 +45,7 @@ final class InputController: IMKInputController {
         }
         guard event.type == .keyDown else { return false }
         shiftAlone = false
+        if event.keyCode != 51 { writeLogged() }
         if waiting != nil {
             if Self.replayable(event) {
                 waiting!.append(event)
@@ -51,7 +57,7 @@ final class InputController: IMKInputController {
 
         let mods = event.modifierFlags.intersection([.command, .control, .option])
         if !mods.isEmpty {
-            if !keys.isEmpty { commit(keys, client) }  // a shortcut: leave the app nothing half-typed
+            if !keys.isEmpty { commit(keys, client, how: "shortcut") }  // a shortcut: leave the app nothing half-typed
             return false
         }
         let chars = event.characters ?? ""
@@ -59,26 +65,37 @@ final class InputController: IMKInputController {
 
         switch event.keyCode {
         case 51:  // delete
-            guard composing else { return false }
+            guard composing else {
+                if logged != nil { deletesAfter += 1 }
+                return false
+            }
             keys.removeLast()
-            keys.isEmpty ? reset(client) : update(client)
+            comp?.event("del")
+            if keys.isEmpty {
+                log(how: "deleted", text: nil)
+                reset(client)
+            } else {
+                update(client)
+            }
             return true
         case 53:  // esc
             guard composing else { return false }
+            log(how: "esc", text: nil)
             reset(client)
             return true
         case 36, 76:  // return, enter: the letters as typed
             guard composing else { return false }
-            commit(keys, client)
+            commit(keys, client, how: "enter")
             return true
         case 49:  // space
             guard composing else { return false }
             if waitForAnswer(event, full: true) { return true }
-            commitSelected(model.selected, client)
+            commitSelected(model.selected, client, how: "space")
             return true
         case 123, 124:  // left / right move the selection, on into the next or previous page
             guard composing else { return false }
             model.move(event.keyCode == 123 ? -1 : 1)
+            comp?.event("move", event.keyCode == 123 ? -1 : 1)
             picked = true
             show(client, fade: false)
             return true
@@ -93,14 +110,19 @@ final class InputController: IMKInputController {
         if chars.count == 1, let c = chars.unicodeScalars.first {
             if c.properties.isLowercase && c.isASCII {
                 if !composing && !EngineClient.shared.connected { return false }  // no engine: type letters
-                if !composing { context = textBeforeCursor(client) }
+                if !composing {
+                    context = textBeforeCursor(client)
+                    let app = client.bundleIdentifier()
+                    comp = TypingLog.shared.logs(app: app) ? Composition(app: app) : nil
+                }
                 keys.append(Character(c))
+                comp?.event(String(c))
                 update(client)
                 return true
             }
             if composing, let n = Int(chars), (1...CandidateModel.pageSize).contains(n) {
                 if waitForAnswer(event) { return true }
-                if model.slot(n) != nil { commitSelected(model.pageRange.lowerBound + n - 1, client) }
+                if model.slot(n) != nil { commitSelected(model.pageRange.lowerBound + n - 1, client, how: "digit") }
                 return true
             }
             if composing && (chars == "=" || chars == "-") {  // = / - turn the page
@@ -109,12 +131,12 @@ final class InputController: IMKInputController {
             }
             if Self.replayable(event) && waitForAnswer(event) { return true }  // punctuation and the like
             if Punctuation.chineseOn, let p = Punctuation.chinese(for: chars, after: composing ? nil : lastChar(client)) {
-                if composing { commitBest(client) }
+                if composing { commitBest(client, how: "punct") }
                 insert(p, client)
                 return true
             }
         }
-        if composing { commitBest(client) }
+        if composing { commitBest(client, how: Self.replayable(event) ? "punct" : "other") }
         return false
     }
 
@@ -128,6 +150,7 @@ final class InputController: IMKInputController {
         let needFull = full && !picked && (stage == "" || stage == "quick")
         guard model.candidates.isEmpty || needFull else { return false }
         waiting = [event]
+        waitStart = Date()
         waitForFull = needFull
         waitTimer?.invalidate()
         waitTimer = Timer.scheduledTimer(withTimeInterval: needFull ? 0.4 : 1.0, repeats: false) { [weak self] _ in
@@ -164,6 +187,7 @@ final class InputController: IMKInputController {
     private func replay(_ client: IMKTextInput, force: Bool = false) {
         guard var rest = waiting else { return }
         waiting = nil
+        comp?.event("wait", Int(Date().timeIntervalSince(waitStart) * 1000))
         waitTimer?.invalidate()
         waitTimer = nil
         var first = force
@@ -195,7 +219,7 @@ final class InputController: IMKInputController {
             shiftAlone = false
             stopWaiting(client)  // what was typed before the switch goes out as Chinese
             Self.english.toggle()
-            if Self.english && !keys.isEmpty { commit(keys, client) }
+            if Self.english && !keys.isEmpty { commit(keys, client, how: "switch") }
         } else {
             shiftAlone = false
         }
@@ -218,6 +242,9 @@ final class InputController: IMKInputController {
         picked = false
         let ctx = context ?? String(Self.history.suffix(64))
         requestId = EngineClient.shared.type(context: ctx, keys: keys)
+        comp?.context = ctx
+        comp?.appText = context != nil
+        comp?.sent[requestId] = (keys.count, Date())
         if model.candidates.isEmpty { return }  // the panel appears with the first answer
         show(client, fade: false)
     }
@@ -227,6 +254,7 @@ final class InputController: IMKInputController {
     /// and after those the candidates for the start of the keys (4A.10), so the pages do not run out.
     func engineAnswered(id: Int, stage: String, candidates: [String], segments: [(String, Int)] = []) {
         guard id == requestId, !keys.isEmpty, let client = currentClient else { return }
+        comp?.answered(id: id, stage: stage)
         if stage == "more" {
             guard self.stage == "full" else { return }
             self.stage = stage
@@ -258,6 +286,7 @@ final class InputController: IMKInputController {
             return
         }
         model.turn(step)
+        comp?.event("page", step)
         picked = true
         show(client, fade: false)
     }
@@ -267,8 +296,10 @@ final class InputController: IMKInputController {
     }
 
     /// Before a key that is not ours: the selection, but the best whole candidate if that is only the start.
-    private func commitBest(_ client: IMKTextInput) {
-        commit(segmentEnd(model.selected) == nil ? model.current ?? keys : model.candidates.first ?? keys, client)
+    private func commitBest(_ client: IMKTextInput, how: String) {
+        let i = segmentEnd(model.selected) == nil ? model.selected : 0
+        guard model.candidates.indices.contains(i) else { return commit(keys, client, how: "letters") }
+        commit(model.candidates[i], client, how: how, picked: i)
     }
 
     /// The keys candidate `i` uses when it is one for the start of the keys only (nil: the whole keys).
@@ -280,12 +311,14 @@ final class InputController: IMKInputController {
 
     /// Commits candidate `i`. One for the start of the keys commits only itself (4A.10): the rest of the keys stay
     /// marked and get candidates of their own, after the context plus what was just committed.
-    private func commitSelected(_ i: Int, _ client: IMKTextInput) {
-        guard model.candidates.indices.contains(i) else { return commit(keys, client) }
+    private func commitSelected(_ i: Int, _ client: IMKTextInput, how: String) {
+        guard model.candidates.indices.contains(i) else { return commit(keys, client, how: "letters") }
         let text = model.candidates[i]
-        guard let end = segmentEnd(i) else { return commit(text, client) }
+        guard let end = segmentEnd(i) else { return commit(text, client, how: how, picked: i) }
         insert(text, client)
         EngineClient.shared.commit(text)
+        log(how: how, picked: i, text: text, used: end)
+        if let c = comp { comp = Composition(app: c.app) }  // the rest of the keys: a record of its own
         keys = String(keys.dropFirst(end))
         if context != nil { context! += text }
         model = CandidateModel()
@@ -295,7 +328,8 @@ final class InputController: IMKInputController {
         update(client)
     }
 
-    private func commit(_ text: String, _ client: IMKTextInput) {
+    private func commit(_ text: String, _ client: IMKTextInput, how: String, picked: Int? = nil) {
+        log(how: how, picked: picked, text: text)
         insert(text, client)
         if text != keys { EngineClient.shared.commit(text) }
         reset(client, clearMarked: false)
@@ -313,6 +347,7 @@ final class InputController: IMKInputController {
         }
         keys = ""
         context = nil
+        comp = nil
         model = CandidateModel()
         segmentEnds = []
         requestId = 0
@@ -320,6 +355,28 @@ final class InputController: IMKInputController {
         wantNextPage = false
         picked = false
         CandidatePanel.shared.hide()
+    }
+
+    // MARK: the typing log (5A.2)
+
+    /// Keeps this composition's record until the next key, which tells whether it was deleted right away.
+    private func log(how: String, picked: Int? = nil, text: String?, used: Int? = nil) {
+        guard let comp = comp else { return }
+        writeLogged()
+        logged = (comp.record(keys: keys, model: model, stage: stage, how: how, picked: picked, text: text, used: used),
+                  Date())
+        loggedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.writeLogged() }
+    }
+
+    private func writeLogged() {
+        loggedTimer?.invalidate()
+        loggedTimer = nil
+        guard let (r, date) = logged else { return }
+        var record = r
+        record["deleted_after"] = deletesAfter
+        logged = nil
+        deletesAfter = 0
+        TypingLog.shared.write(record, at: date)
     }
 
     // MARK: reading the app's text
@@ -348,14 +405,15 @@ final class InputController: IMKInputController {
     override func commitComposition(_ sender: Any!) {
         guard let client = sender as? IMKTextInput else { return }
         stopWaiting(client)
-        if !keys.isEmpty { commit(keys, client) }
+        if !keys.isEmpty { commit(keys, client, how: "away") }
     }
 
     override func deactivateServer(_ sender: Any!) {
         if let client = sender as? IMKTextInput {
             stopWaiting(client)
-            if !keys.isEmpty { commit(keys, client) }
+            if !keys.isEmpty { commit(keys, client, how: "away") }
         }
+        writeLogged()
         CandidatePanel.shared.hide()
         super.deactivateServer(sender)
     }
@@ -381,7 +439,20 @@ final class InputController: IMKInputController {
             item.state = (i == 1) == Punctuation.chineseOn ? .on : .off
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        let pause = NSMenuItem(title: "暂停记录", action: #selector(togglePause(_:)), keyEquivalent: "")
+        pause.state = TypingLog.shared.paused ? .on : .off
+        menu.addItem(pause)
+        menu.addItem(NSMenuItem(title: "打开记录文件夹", action: #selector(openLog(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "删除全部记录", action: #selector(deleteLog(_:)), keyEquivalent: ""))
         return menu
+    }
+
+    @objc func togglePause(_ sender: Any?) { TypingLog.shared.paused.toggle() }
+    @objc func openLog(_ sender: Any?) { TypingLog.shared.openFolder() }
+    @objc func deleteLog(_ sender: Any?) {
+        logged = nil  // the last commit's record too
+        TypingLog.shared.deleteAll()
     }
 
     @objc func pickPunctuation(_ sender: Any?) {

@@ -1,7 +1,8 @@
 import AppKit
 import InputMethodKit
 
-// Checks InputController's key handling against a fake engine (4A.8, 4A.9):  shell/build.sh keys
+// Checks InputController's key handling against a fake engine (4A.8, 4A.9, 4A.10), and the typing log with its
+// summary (5A.2, in a temporary folder):  shell/build.sh keys
 // The fake engine answers each key string with a quick guess and a full answer after set delays; the fake app
 // keeps the text the input method commits, and types the keys the input method passes on, as an app would.
 // Shows the candidate panel on this Mac's screen while it runs (a few seconds).
@@ -19,10 +20,13 @@ struct Engine {
     static var quick: Double? = 0.05   // seconds to the quick guess; nil: never
     static var full: Double? = 0.25
     static var more: Double? = nil     // the pause's answer, with candidates for the start of the keys (4A.10)
+    static var moreExtra: [String] = []  // more whole candidates in that answer, after F: and F2:
     static var contexts: [String: String] = [:]  // keys -> the context they came with (read on the main thread)
 }
 let sock = NSTemporaryDirectory() + "llmime-keys-\(getpid()).sock"
 setenv("LLMIME_SOCK", sock, 1)
+let logDir = NSTemporaryDirectory() + "llmime-keys-log-\(getpid())"
+setenv("LLMIME_LOG_DIR", logDir, 1)
 unlink(sock)
 let listener = socket(AF_UNIX, SOCK_STREAM, 0)
 var addr = sockaddr_un()
@@ -60,7 +64,7 @@ Thread.detachNewThread {
             DispatchQueue.main.async { Engine.contexts[k] = ctx }
             reply(id, "quick", ["Q:" + k, "Q2:" + k], after: Engine.quick)
             reply(id, "full", ["F:" + k, "F2:" + k], after: Engine.full)
-            reply(id, "more", ["F:" + k, "F2:" + k], after: Engine.more,
+            reply(id, "more", ["F:" + k, "F2:" + k] + Engine.moreExtra, after: Engine.more,
                   extra: ["segments": [["S" + k.prefix(2), 2], ["W" + k, k.count]]])
         }
     }
@@ -121,8 +125,9 @@ check(EngineClient.shared.connected, "connected to the fake engine")
 /// Presses the keys one after another without waiting; what the input method passes on, the app types.
 func press(_ keys: [String]) {
     for k in keys {
-        let code: UInt16 = ["space": 49, "delete": 51, "right": 124, "return": 36][k] ?? 0
-        let chars = ["space": " ", "delete": "\u{7f}", "right": "\u{f703}", "return": "\r"][k] ?? k
+        let code: UInt16 = ["space": 49, "delete": 51, "right": 124, "down": 125, "return": 36, "esc": 53][k] ?? 0
+        let chars = ["space": " ", "delete": "\u{7f}", "right": "\u{f703}", "down": "\u{f701}", "return": "\r",
+                     "esc": "\u{1b}"][k] ?? k
         let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
                                  context: nil, characters: chars, charactersIgnoringModifiers: chars,
                                  isARepeat: false, keyCode: code)!
@@ -221,6 +226,70 @@ Punctuation.chineseOn = false
 t = run("english punctuation", ["n", "i", ","])
 check(t == "F:ni," || t == "Q:ni,", "english punctuation: \(t)")
 UserDefaults.standard.removeObject(forKey: "punctuation")
+
+// 5A.2: the typing log. One record per commit or Esc, written off the key path; the summary counts them.
+Engine.quick = 0.05; Engine.full = 0.1; Engine.more = 0.2
+Engine.moreExtra = ["F3", "F4", "F5", "F6", "F7"]
+press(["esc"])  // writes the last record of the tests above
+TypingLog.shared.flush(); TypingLog.shared.deleteAll(); TypingLog.shared.flush()
+client.text = ""
+press(letters("abcd")); wait(0.5); press(["down"]); press(["2"])  // the next page's second: F7
+check(client.text == "F7", "page down, 2 -> the 7th: \(client.text)")
+press(letters("abx")); wait(0.3); press(["delete", "c"]); wait(0.3); press(["space"])  // a wrong key, deleted
+wait(0.3)
+press(["delete", "delete"])  // right after the commit: it was wrong
+press(["z", "return"])        // none of them: the letters
+press(["q"]); wait(0.2); press(["esc"])
+press(["esc"])  // not composing: writes the record kept for deletes after it
+TypingLog.shared.flush()
+func records() -> [[String: Any]] {
+    let files = (try? FileManager.default.contentsOfDirectory(atPath: logDir))?.filter { $0.hasSuffix(".jsonl") } ?? []
+    return files.flatMap { f -> [[String: Any]] in
+        let s = (try? String(contentsOfFile: logDir + "/" + f, encoding: .utf8)) ?? ""
+        return s.split(separator: "\n").compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+    }
+}
+var rs = records()
+check(rs.map { $0["how"] as? String ?? "" } == ["digit", "space", "enter", "esc"], "records: \(rs.map { $0["how"] ?? "" })")
+if rs.count == 4 {
+    let (a, b, c, d) = (rs[0], rs[1], rs[2], rs[3])
+    check(a["keys"] as? String == "abcd" && a["text"] as? String == "F7" && a["picked"] as? Int == 6
+          && a["page"] as? Int == 1 && a["app"] as? String == "test" && (a["cands"] as? [String])?.count == 9,
+          "paged pick: \(a)")
+    check(((a["events"] as? [[Any]]) ?? []).contains { $0.count == 3 && $0[1] as? String == "page" }, "page event: \(a)")
+    let answers = (a["answers"] as? [[Any]]) ?? []
+    check(["quick", "full", "more"].allSatisfy { st in answers.contains { $0[1] as? String == st } }, "answer times: \(answers)")
+    check(a["t"] is String && a["ms"] is Int && a["context"] is String && a["stage"] as? String == "more", "fields: \(a)")
+    let evs = ((b["events"] as? [[Any]]) ?? []).map { $0[1] as? String ?? "" }
+    check(b["keys"] as? String == "abc" && evs == ["a", "b", "x", "del", "c"], "deleted and typed again: \(evs)")
+    check(b["deleted_after"] as? Int == 2 && b["text"] as? String == "F:abc", "deleted after the commit: \(b)")
+    check(c["keys"] as? String == "z" && c["text"] as? String == "z" && c["deleted_after"] as? Int == 0, "enter: \(c)")
+    check(d["keys"] as? String == "q" && d["text"] is NSNull, "esc: \(d)")
+}
+// The summary: one of each, as counted.
+let py = Process()
+py.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+py.arguments = ["../scripts/typing_summary.py", "--dir", logDir]
+py.standardOutput = FileHandle.nullDevice
+try? py.run(); py.waitUntilExit()
+let mdFile = ((try? FileManager.default.contentsOfDirectory(atPath: logDir)) ?? []).first { $0.hasSuffix(".md") }
+let md = mdFile.flatMap { try? String(contentsOfFile: logDir + "/" + $0, encoding: .utf8) } ?? ""
+for row in ["| 没选第 1 个 / 翻了页 | 1 |", "| 打了又删、重打 | 1 |", "| 上屏后马上删 | 1 |", "| Enter 上原字母 | 1 |"] {
+    check(md.contains(row), "summary has \(row)")
+}
+check(md.contains("上屏 3 次") && md.contains("放弃（Esc / 删光）1 次"), "summary totals")
+// Paused: nothing written.
+TypingLog.shared.paused = true
+press(letters("pp")); wait(0.2); press(["space", "esc"])
+TypingLog.shared.flush()
+check(records().count == 4, "paused: no new record (\(records().count))")
+TypingLog.shared.paused = false
+UserDefaults.standard.removeObject(forKey: "logPaused")
+// Deleting everything empties the folder.
+TypingLog.shared.deleteAll(); TypingLog.shared.flush()
+check(((try? FileManager.default.contentsOfDirectory(atPath: logDir)) ?? ["?"]).isEmpty, "deleted all")
+Engine.more = nil; Engine.moreExtra = []
+try? FileManager.default.removeItem(atPath: logDir)
 
 unlink(sock)
 print(failed == 0 ? "keys: all passed" : "keys: \(failed) failed")
