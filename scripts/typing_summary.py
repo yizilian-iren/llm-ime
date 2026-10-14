@@ -16,7 +16,7 @@ import os
 import sys
 
 DEFAULT_DIR = os.path.expanduser("~/Library/Application Support/llm-ime/log")
-LONG_MS = 3000       # first key to commit
+LONG_MS = 2000       # last key to commit: deciding / looking for the right one
 WAIT_MS = 300        # a key to its first candidates, or a commit key waiting for the answer (4A.8)
 RETYPE_S = 10        # given up (Esc, all deleted) and typed again within this: a retype
 EXAMPLES = 8
@@ -27,7 +27,7 @@ CATEGORIES = [
     ("retype", "打了又删、重打", "拼音打了又删再打，或 Esc / 删光以后 10 s 内重打"),
     ("deleted_after", "上屏后马上删", "上屏后紧接着按了删除"),
     ("enter", "Enter 上原字母", "没有一个候选对，上了字母"),
-    ("long", "用了很久", f"第一键到上屏超过 {LONG_MS // 1000} s"),
+    ("long", "用了很久", f"最后一键到上屏超过 {LONG_MS // 1000} s"),
     ("wait", "等候选", f"某个键等第一批候选超过 {WAIT_MS} ms，或上屏键等答案超过 {WAIT_MS} ms"),
 ]
 
@@ -95,7 +95,7 @@ def classify(records):
             cats["deleted_after"].append(r)
         if r["how"] == "enter":
             cats["enter"].append(r)
-        if committed and r["ms"] > LONG_MS:
+        if committed and last_key_ms(r) > LONG_MS:
             cats["long"].append(r)
         waits = first_waits(r) + [e[2] for e in events if e[1] == "wait"]
         if waits and max(waits) > WAIT_MS:
