@@ -16,13 +16,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ime import engine as engines  # noqa: E402
 from ime.userwords import UserWords  # noqa: E402
 
-# (picked: context, keys, text), (typed later: context, keys), the word, the rank it must reach (1 = first)
+# (picked: context, keys, text; or a word list [(keys, word, count)]), (typed later: context, keys), the word, the rank
+# it must reach (1 = first) or the word it must come before
 CASES = [
     (("我最近在玩", "mingchao", "鸣潮"), ("我最近在玩", "mingchao"), "鸣潮", 1),
     (("我最近在玩", "mingchao", "鸣潮"), ("", "wozuijinzaiwanmingchao"), "我最近在玩鸣潮", 1),
     (("还有给我讲解一下", "liji", "力积"), ("能不能讲讲", "liji"), "力积", 5),
     (("我", "baba", "爸爸"), ("我", "baba"), "爸爸", "粑粑"),  # before 粑粑
     (("这些怎么", "zhexiezenmede", "这些怎么得"), ("你怎么", "zenmede"), "怎么得", 2),
+    # 先 picked alone 5 times, 现在 3 times: xianz is still 现在, not 先在 (the best's own word counts)
+    ([("xian", "先", 5), ("xianz", "现在", 3)], ("", "xianz"), "现在", 1),
 ]
 
 
@@ -39,12 +42,16 @@ def main():
     failed = 0
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "words.json")
-        for (pctx, pkeys, ptext), (ctx, keys), word, goal in CASES:
+        for picked, (ctx, keys), word, goal in CASES:
             words = UserWords(eng, path)
             words.forget()
             before = eng.convert(ctx, keys, k=5)
-            first = eng.convert(pctx, pkeys, k=5)[0]
-            words.learn(pkeys, ptext, first)
+            if isinstance(picked, list):  # a word list as it was: (keys, word, count)
+                for k, w, n in picked:
+                    words.add(k, w, n)
+            else:
+                pctx, pkeys, ptext = picked
+                words.learn(pkeys, ptext, eng.convert(pctx, pkeys, k=5)[0])
             t = time.perf_counter()
             after = words.rerank(ctx, keys, eng.convert(ctx, keys, k=5))
             ms = (time.perf_counter() - t) * 1000

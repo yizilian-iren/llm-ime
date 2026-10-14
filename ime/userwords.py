@@ -8,8 +8,9 @@ widened to at least two, is learned with its keys (liji picked as 力积: liji -
 
 After each search, `rerank` looks for learned keys inside the typed keys, at character boundaries of the best
 candidate; the best with that stretch replaced by the learned word (or the word itself, when it is all the keys) is
-scored by the model against the best (LLMEngine.score) and gets `bonus`: when that puts it ahead it comes first, else
-second. Keys with no learned keys in them cost nothing. `segments` puts learned words for the start of the keys in
+scored by the model against the best (LLMEngine.score); each of them, the best too, adds the bonus of the learned
+words it has (the largest; a single character inside longer keys a quarter of it), and a variant that then beats the
+best comes first, else second. Keys with no learned keys in them cost nothing. `segments` puts learned words for the start of the keys in
 front of the engine's (4A.10).
 """
 
@@ -22,6 +23,7 @@ import time
 from ime.ngram import char_readings_table
 
 DEFAULT_PATH = os.path.expanduser("~/Library/Application Support/llm-ime/words.json")
+SINGLE_SHARE = 0.25  # of the bonus, for a one-character word inside longer keys
 
 
 def spans(text, keys, readings):
@@ -153,17 +155,34 @@ class UserWords:
         age = max(0.0, (now or time.time()) - last)
         return min(self.cap, self.base + self.per_count * math.log1p(count)) * 0.5 ** (age / self.half_life)
 
-    def _variants(self, keys, best):
-        """{variant text: bonus} for learned words whose keys are in `keys`."""
+    def _hits(self, keys):
+        """Learned (keys, word, count, last used) whose keys are in `keys`."""
         with self.lock:
-            hits = [(k, w, c, t) for k, ws in self.words.items() if k in keys for w, (c, t) in ws.items()]
-        if not hits:
-            return {}
+            return [(k, w, c, t) for k, ws in self.words.items() if k in keys for w, (c, t) in ws.items()]
+
+    def text_bonus(self, keys, text, hits):
+        """The largest bonus among the learned words `text` has where `keys` read them (not added up: two words do
+        not beat one). A single character inside longer keys gets SINGLE_SHARE of it: xian picked as 先 alone says
+        little about xianz (现在 over 先在, 5A.3)."""
+        sp = spans(text, keys, self.readings)
+        if not sp:
+            return 0.0
+        best = 0.0
+        for k, w, c, t in hits:
+            for a in range(len(text) - len(w) + 1):
+                if text[a : a + len(w)] == w and keys[sp[a][0] : sp[a + len(w) - 1][1]] == k:
+                    share = SINGLE_SHARE if len(w) == 1 and len(k) < len(keys) else 1.0
+                    best = max(best, share * self.bonus(c, t))
+                    break
+        return best
+
+    def _variants(self, keys, best, hits):
+        """Texts the best becomes with a learned word in place of what it has for that word's keys."""
         sp = spans(best, keys, self.readings) if best else None
         starts = {s[0]: i for i, s in enumerate(sp)} if sp else {}
         ends = {s[1]: i + 1 for i, s in enumerate(sp)} if sp else {}
-        out = {}
-        for k, w, c, t in hits:
+        out = []
+        for k, w, _c, _t in hits:
             p = keys.find(k)
             while p >= 0:
                 if p == 0 and len(k) == len(keys):
@@ -172,21 +191,23 @@ class UserWords:
                     v = best[: starts[p]] + w + best[ends[p + len(k)] :]
                 else:
                     v = None
-                if v and v != best:
-                    out[v] = max(out.get(v, 0.0), self.bonus(c, t))
+                if v and v != best and v not in out:
+                    out.append(v)
                 p = keys.find(k, p + 1)
         return out
 
     def rerank(self, context, keys, cands):
+        """Each variant against the best, both with the model's score plus the bonus of the learned words in them."""
         if not cands:
             return cands
-        variants = self._variants(keys, cands[0])
+        hits = self._hits(keys)
+        variants = self._variants(keys, cands[0], hits) if hits else []
         if not variants:
             return cands
-        texts = [cands[0]] + list(variants)
-        scores = self.engine.score(context, keys, texts)
+        texts = [cands[0]] + variants
+        scores = [s + self.text_bonus(keys, t, hits) for s, t in zip(self.engine.score(context, keys, texts), texts)]
         best = scores[0]
-        ranked = sorted(((s + variants[v], v) for v, s in zip(texts[1:], scores[1:])), reverse=True)
+        ranked = sorted(zip(scores[1:], texts[1:]), reverse=True)
         ahead = [v for s, v in ranked if s >= best]
         after = [v for s, v in ranked if s < best]
         head = ahead + [cands[0]] + after
