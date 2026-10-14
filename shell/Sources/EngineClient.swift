@@ -39,6 +39,16 @@ final class EngineClient {
         send(["op": "commit", "text": text])
     }
 
+    /// A pick to learn from (5A.3): the keys, what was committed for them, the engine's first candidate then.
+    func learn(keys: String, text: String, first: String) {
+        send(["op": "learn", "keys": keys, "text": text, "first": first])
+    }
+
+    /// Clears the engine's word list (删除全部记录).
+    func forget() {
+        send(["op": "forget"])
+    }
+
     private func send(_ msg: [String: Any]) {
         guard var data = try? JSONSerialization.data(withJSONObject: msg) else { return }
         data.append(0x0a)

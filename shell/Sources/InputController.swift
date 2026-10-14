@@ -23,7 +23,9 @@ final class InputController: IMKInputController {
     private var segmentEnds: [Int] = []      // after the whole candidates: the keys each start-of-keys one uses
     private var comp: Composition?           // this composition, for the typing log (5A.2); nil: not logged
     private var waitStart = Date()
-    private var logged: ([String: Any], Date)?  // the last commit's record, written at the next key but delete
+    private var logged: ([String: Any], Date, (String, String, String)?)?  // the last commit's record, written at the
+                                             // next key but delete, and the pick to learn from (5A.3) then
+    private var pieces: (keys: String, text: String, first: String)?  // start-of-keys picks so far (4A.10)
     private var deletesAfter = 0             // deletes right after that commit (it was wrong)
     private var loggedTimer: Timer?
 
@@ -318,6 +320,8 @@ final class InputController: IMKInputController {
         insert(text, client)
         EngineClient.shared.commit(text)
         log(how: how, picked: i, text: text, used: end)
+        let p = pieces ?? ("", "", model.candidates.first ?? "")
+        pieces = (p.keys + keys.prefix(end), p.text + text, p.first)
         if let c = comp { comp = Composition(app: c.app) }  // the rest of the keys: a record of its own
         keys = String(keys.dropFirst(end))
         if context != nil { context! += text }
@@ -329,7 +333,13 @@ final class InputController: IMKInputController {
     }
 
     private func commit(_ text: String, _ client: IMKTextInput, how: String, picked: Int? = nil) {
-        log(how: how, picked: picked, text: text)
+        var learn: (String, String, String)?
+        if picked != nil, let first = model.candidates.first {  // a candidate, not the letters
+            let p = pieces ?? ("", "", first)
+            learn = (p.keys + keys, p.text + text, p.first)
+        }
+        pieces = nil
+        log(how: how, picked: picked, text: text, learn: learn)
         insert(text, client)
         if text != keys { EngineClient.shared.commit(text) }
         reset(client, clearMarked: false)
@@ -348,6 +358,7 @@ final class InputController: IMKInputController {
         keys = ""
         context = nil
         comp = nil
+        pieces = nil
         model = CandidateModel()
         segmentEnds = []
         requestId = 0
@@ -359,21 +370,24 @@ final class InputController: IMKInputController {
 
     // MARK: the typing log (5A.2)
 
-    /// Keeps this composition's record until the next key, which tells whether it was deleted right away.
-    private func log(how: String, picked: Int? = nil, text: String?, used: Int? = nil) {
+    /// Keeps this composition's record until the next key, which tells whether it was deleted right away; a pick
+    /// is learned from (5A.3) only if it was not. Paused or an excluded app: neither.
+    private func log(how: String, picked: Int? = nil, text: String?, used: Int? = nil,
+                     learn: (String, String, String)? = nil) {
         guard let comp = comp else { return }
         writeLogged()
         logged = (comp.record(keys: keys, model: model, stage: stage, how: how, picked: picked, text: text, used: used),
-                  Date())
+                  Date(), learn)
         loggedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.writeLogged() }
     }
 
     private func writeLogged() {
         loggedTimer?.invalidate()
         loggedTimer = nil
-        guard let (r, date) = logged else { return }
+        guard let (r, date, learn) = logged else { return }
         var record = r
         record["deleted_after"] = deletesAfter
+        if let (k, t, f) = learn, deletesAfter == 0 { EngineClient.shared.learn(keys: k, text: t, first: f) }
         logged = nil
         deletesAfter = 0
         TypingLog.shared.write(record, at: date)
@@ -453,6 +467,7 @@ final class InputController: IMKInputController {
     @objc func deleteLog(_ sender: Any?) {
         logged = nil  // the last commit's record too
         TypingLog.shared.deleteAll()
+        EngineClient.shared.forget()  // and the word list learned from them (5A.3)
     }
 
     @objc func pickPunctuation(_ sender: Any?) {

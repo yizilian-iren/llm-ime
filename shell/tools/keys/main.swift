@@ -22,6 +22,7 @@ struct Engine {
     static var more: Double? = nil     // the pause's answer, with candidates for the start of the keys (4A.10)
     static var moreExtra: [String] = []  // more whole candidates in that answer, after F: and F2:
     static var contexts: [String: String] = [:]  // keys -> the context they came with (read on the main thread)
+    static var learned: [String] = []  // "keys text first" of each learn op, and "forget" (5A.3; main thread)
 }
 let sock = NSTemporaryDirectory() + "llmime-keys-\(getpid()).sock"
 setenv("LLMIME_SOCK", sock, 1)
@@ -58,8 +59,13 @@ Thread.detachNewThread {
         while let nl = buf.firstIndex(of: 0x0a) {
             let line = buf[buf.startIndex..<nl]
             buf = Data(buf[(nl + 1)...])
-            guard let m = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let id = m["id"] as? Int, let k = m["keys"] as? String else { continue }
+            guard let m = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            if let op = m["op"] as? String, op == "learn" || op == "forget" {
+                let s = op == "forget" ? op : [m["keys"], m["text"], m["first"]].map { $0 as? String ?? "?" }.joined(separator: " ")
+                DispatchQueue.main.async { Engine.learned.append(s) }
+                continue
+            }
+            guard let id = m["id"] as? Int, let k = m["keys"] as? String else { continue }
             let ctx = m["context"] as? String ?? ""
             DispatchQueue.main.async { Engine.contexts[k] = ctx }
             reply(id, "quick", ["Q:" + k, "Q2:" + k], after: Engine.quick)
@@ -209,7 +215,11 @@ check(Engine.contexts["cd"]?.hasSuffix("Sab") == true, "the rest comes after wha
 press(["space"]); wait(0.3)
 check(client.text == "SabF:cd" && client.marked.isEmpty, "then the rest: \(client.text)")
 client.text = ""
-press(letters("abcd")); wait(0.5); press(["4"])
+Engine.learned = []
+press(letters("abcd")); wait(0.5)
+// 5A.3: the pieces are learned as one pick, with the engine's first whole candidate then
+check(Engine.learned == ["abcd SabF:cd F:abcd"], "pieces learned as one: \(Engine.learned)")
+press(["4"])
 check(client.text == "Wabcd", "one that uses all the keys commits as a whole: \(client.text)")
 client.text = ""
 press(letters("abcd")); wait(0.5); press(["right", "right", ","])
@@ -232,6 +242,8 @@ Engine.quick = 0.05; Engine.full = 0.1; Engine.more = 0.2
 Engine.moreExtra = ["F3", "F4", "F5", "F6", "F7"]
 press(["esc"])  // writes the last record of the tests above
 TypingLog.shared.flush(); TypingLog.shared.deleteAll(); TypingLog.shared.flush()
+wait(0.2)
+Engine.learned = []
 client.text = ""
 press(letters("abcd")); wait(0.5); press(["down"]); press(["2"])  // the next page's second: F7
 check(client.text == "F7", "page down, 2 -> the 7th: \(client.text)")
@@ -242,6 +254,9 @@ press(["z", "return"])        // none of them: the letters
 press(["q"]); wait(0.2); press(["esc"])
 press(["esc"])  // not composing: writes the record kept for deletes after it
 TypingLog.shared.flush()
+wait(0.2)
+// 5A.3: only the paged pick is learned: not the one deleted right after, not Enter's letters, not Esc
+check(Engine.learned == ["abcd F7 F:abcd"], "learned: \(Engine.learned)")
 func records() -> [[String: Any]] {
     let files = (try? FileManager.default.contentsOfDirectory(atPath: logDir))?.filter { $0.hasSuffix(".jsonl") } ?? []
     return files.flatMap { f -> [[String: Any]] in
@@ -283,11 +298,14 @@ TypingLog.shared.paused = true
 press(letters("pp")); wait(0.2); press(["space", "esc"])
 TypingLog.shared.flush()
 check(records().count == 4, "paused: no new record (\(records().count))")
+wait(0.2)
+check(Engine.learned == ["abcd F7 F:abcd"], "paused: nothing learned: \(Engine.learned)")
 TypingLog.shared.paused = false
 UserDefaults.standard.removeObject(forKey: "logPaused")
-// Deleting everything empties the folder.
-TypingLog.shared.deleteAll(); TypingLog.shared.flush()
+// Deleting everything (the menu item) empties the folder and clears the engine's word list.
+ctl.deleteLog(nil); TypingLog.shared.flush(); wait(0.2)
 check(((try? FileManager.default.contentsOfDirectory(atPath: logDir)) ?? ["?"]).isEmpty, "deleted all")
+check(Engine.learned.last == "forget", "the word list too: \(Engine.learned)")
 Engine.more = nil; Engine.moreExtra = []
 try? FileManager.default.removeItem(atPath: logDir)
 

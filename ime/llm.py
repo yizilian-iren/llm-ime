@@ -536,6 +536,37 @@ class LLMEngine:
         whole = bool(groups[(True, True)] or groups[(False, True)])
         return _simplified_first(groups[(True, whole)][:words] + groups[(False, whole)], lambda s: s[0])  # 這樣 說 last (5B.7)
 
+    def score(self, context, keys, texts):
+        """The model's score of each of `texts` as the reading of `keys` after `context`, as the search would add it
+        up (same prompt, the mixed-in model with its weight, the end of the sentence for a fine-tuned model) but with
+        the tokenizer's own tokens and no abbreviation penalties: for comparing texts with each other (5A.3's
+        user words against the search's best), not with the search's scores. One forward per model for all."""
+        if not texts:
+            return []
+        ids = [self.tok.encode(t) for t in texts]
+        L = max(len(x) for x in ids)
+        batch = mx.array([x + [self.eos] * (L - len(x)) for x in ids])
+        idx = mx.array([0] * len(texts))
+        plain = context[-64:] if context.strip() else self.empty_prompt
+        self._prefill(fmt.prompt(context, keys, self.order) if self.keys_in_prompt else plain)
+        runs = [(self.model, self._fork_cache(idx, L + 1), self._ctx_logits, 1.0)]
+        if self.mix:
+            self.mix.prefill(self.tok.encode(plain))
+            mix_w = self.mix_weight if context.strip() else self.mix_weight_empty
+            runs.append((self.mix.model, self.mix.fork(idx, L + 1), self.mix.ctx_logits, mix_w))
+        target = mx.concatenate([batch, mx.full((len(texts), 1), self.eos, dtype=batch.dtype)], axis=1)
+        out = np.zeros(len(texts))
+        for i, (model, cache, ctx_logits, w) in enumerate(runs):
+            logits = mx.concatenate([mx.repeat(ctx_logits[:, None, :], len(texts), axis=0), model(batch, cache=cache)],
+                                    axis=1)  # position j predicts token j; position len(text) its end
+            lp = mx.take_along_axis(logits, target[..., None], axis=-1)[..., 0] - mx.logsumexp(logits, axis=-1)
+            lp = np.array(lp.astype(mx.float32))  # only the targets' columns leave the GPU
+            for b, x in enumerate(ids):
+                out[b] += w * float(lp[b, : len(x)].sum())
+                if i == 0 and self.keys_in_prompt:
+                    out[b] += float(lp[b, len(x)])
+        return out.tolist()
+
 
 def _apply(keys, fix):
     """keys with the fixes (start, end, standard keys, cost) made."""

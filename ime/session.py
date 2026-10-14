@@ -16,6 +16,8 @@ do not starve each other. The worker takes each tag's newest request in turn and
      search was: 4A.5). With `segments`, it also carries the engine's candidates for the start of the keys
      (engine.segments: [(text, keys used)], 4A.10) as `segments=`, leaving out those that use all the keys
      and are already among the whole candidates.
+With `words` (ime.userwords.UserWords), the full answer is reranked by the user's words and their pieces for the
+start of the keys come first (5A.3); the quick guess is left alone, to stay quick.
 Keys that cannot all be read as pinyin (a typo) still get candidates: the longest prefix that can is
 converted and the rest of the letters follow as typed (4A.4).
 `on_result(context, keys, candidates, stage)` is called from the worker thread with stage "quick" / "full" / "more",
@@ -29,8 +31,9 @@ import traceback
 
 
 class Session:
-    def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False):
-        self.engine, self.on_result, self.k = engine, on_result, k
+    def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False,
+                 words=None):
+        self.engine, self.on_result, self.k, self.words = engine, on_result, k, words
         self.more, self.more_delay = more, more_delay
         self.segments = segments and hasattr(engine, "segments")
         self.on_error = on_error or traceback.print_exc
@@ -84,6 +87,8 @@ class Session:
         if full is None:
             return
         self._remember(context, keys, full)
+        if self.words:
+            full = self.words.rerank(context, keys, full)
         send(context, keys, full, "full")
         more = bool(self.more) and self.more > self.k and len(full) >= self.k
         if not more and not self.segments:
@@ -103,7 +108,10 @@ class Session:
             return
         if self._busy():
             return
-        segs = [(t, e) for t, e in self.engine.segments(context, keys) if e < len(keys) or t not in whole]
+        segs = self.engine.segments(context, keys)
+        if self.words:
+            segs = self.words.segments(keys, segs)
+        segs = [(t, e) for t, e in segs if e < len(keys) or t not in whole]
         send(context, keys, whole, "more", segments=segs)
 
     def _busy(self):

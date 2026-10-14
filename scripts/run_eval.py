@@ -70,6 +70,7 @@ def main():
     ap.add_argument("--src", default="", help="only items from this source (user / public)")
     ap.add_argument("--tag", default="")
     ap.add_argument("--opt", action="append", default=[], help="engine option key=value")
+    ap.add_argument("--words", default="", help="user words to rerank with (5A.3): keys<TAB>word[<TAB>count] lines")
     a = ap.parse_args()
 
     opts = {}
@@ -80,6 +81,11 @@ def main():
         except ValueError:
             opts[k] = v
     eng = engines.load(a.engine, **opts)
+    words = None
+    if a.words:
+        from ime.userwords import UserWords
+        words = UserWords(eng, path="")
+        print(f"{words.import_file(a.words)} user words", file=sys.stderr)
     items = [json.loads(line) for line in open("data/private/eval.jsonl")]
     if a.src:
         items = [r for r in items if r["src"] == a.src]
@@ -88,6 +94,7 @@ def main():
     forms = a.forms.split(",")
 
     hits = defaultdict(lambda: [0, 0, 0])  # bucket -> [n, p1, p5]
+    plain_hits = [0, 0, 0]  # with --words: n, P@1 without them, first candidate changed by them
     out = []
     t0 = time.time()
     for i, r in enumerate(items):
@@ -96,6 +103,12 @@ def main():
             if keys is None:
                 continue
             cands = eng.convert(r["context"], keys, k=5)
+            if words:
+                plain = cands
+                cands = words.rerank(r["context"], keys, cands)
+                plain_hits[0] += 1
+                plain_hits[1] += bool(plain) and plain[0] == r["target"]
+                plain_hits[2] += bool(plain) and bool(cands) and plain[0] != cands[0]
             p1 = bool(cands) and cands[0] == r["target"]
             p5 = r["target"] in cands[:5]
             for b in ("all", f"{form}", f"{form} {ctx_bucket(r['context'])}", f"{form} {len_bucket(r['target'])}",
@@ -129,6 +142,9 @@ def main():
     for b in sorted(hits, key=lambda b: (b != "all", b.split()[0], b)):
         n, p1, p5 = hits[b]
         print(f"| {b} | {n} | {100 * p1 / n:.1f} | {100 * p5 / n:.1f} |")
+    if words:
+        n, p1, ch = plain_hits
+        print(f"\nwithout the user words: P@1 {100 * p1 / n:.1f}; their first candidate changed on {ch} of {n}")
     if lat:
         print(f"\nper-keystroke latency (initials, {len(lat)} calls): p50 {pct(lat, .5):.1f} ms, p95 {pct(lat, .95):.1f} ms")
 

@@ -9,6 +9,7 @@
 #   ~/Library/Logs/llm-ime/engine.log               its log (times and errors only)
 #   ~/Library/LaunchAgents/com.llm-ime.summary.plist the typing log's summary, hourly (5A.2)
 #   ~/Library/Application Support/llm-ime/log/      the typing log and its summaries (the shell writes it)
+#   ~/Library/Application Support/llm-ime/words.json the user's word list (5A.3, the service writes it)
 # The repo there (~/Projects/llm-ime) only lends its .venv and models; missing model files are copied in.
 # M3's ssh is restricted (no pty, no forwarding): everything below is one non-interactive command each.
 set -e
