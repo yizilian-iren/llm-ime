@@ -61,6 +61,28 @@ def letters_then(events):
     return False
 
 
+def typed(r):
+    """The keys as pressed, ⌫ for a delete (empty for the rest of the keys after a start was picked, 4A.10)."""
+    return "".join("⌫" if e[1] == "del" else e[1] for e in r["events"] if len(e) == 2)
+
+
+def keys_of(r):
+    """The keys of the record; for one deleted to nothing, the keys there were before the last deletes."""
+    if r["keys"]:
+        return r["keys"]
+    s = before = ""
+    for e in r["events"]:
+        if len(e) != 2:
+            continue
+        if e[1] == "del":
+            if s and not before:
+                before = s
+            s = s[:-1]
+        else:
+            s, before = s + e[1], ""
+    return before
+
+
 def last_key_ms(r):
     keys = [e[0] for e in r["events"] if len(e) == 2 and (len(e[1]) == 1 or e[1] == "del")]
     return r["ms"] - (keys[-1] if keys else 0)
@@ -128,12 +150,12 @@ def describe(r):
     if waits:
         bits.append(f"最久等 {max(waits)} ms")
     bits.append(f"{r['ms'] / 1000:.1f} s，最后一键后 {last_key_ms(r) / 1000:.1f} s")
-    typed = "".join("⌫" if e[1] == "del" else e[1] for e in r["events"] if len(e) == 2)
-    got = r.get("text") if r.get("text") is not None else f"（{r['how']}）"
+    pressed = typed(r)
+    got = r.get("text") if r.get("text") is not None else {"esc": "（Esc）", "deleted": "（删光）"}.get(r["how"], r["how"])
     cands = " / ".join(r.get("cands", [])[:PAGE])
-    line = f"- {t} {app}  `{r['keys']}` → **{got}**（{'，'.join(bits)}）"
-    if typed != r["keys"]:
-        line += f"  按键 `{typed}`"
+    line = f"- {t} {app}  `{keys_of(r)}` → **{got}**（{'，'.join(bits)}）"
+    if pressed and pressed != r["keys"]:
+        line += f"  按键 `{pressed}`"
     line += f"\n  前文「{ctx}」 候选：{cands or '无'}"
     return line
 
@@ -170,7 +192,7 @@ def summarize(day, records):
         if not rs:
             continue
         out += ["", f"## {name}（{len(rs)}）", "", what + "。", ""]
-        again = collections.Counter((r["keys"], r.get("text")) for r in rs)
+        again = collections.Counter((keys_of(r), r.get("text")) for r in rs if keys_of(r))
         rep = [(k, t, n) for (k, t), n in again.most_common() if n > 1]
         if rep:
             out.append("反复出现：" + "，".join(f"`{k}` → {t or '（放弃）'} ×{n}" for k, t, n in rep[:10]))
