@@ -119,9 +119,10 @@ class Session:
         return cands
 
     def _convert(self, context, keys, **kw):
-        """engine.convert, or for keys it cannot read: the longest readable prefix converted + the rest as typed."""
+        """engine.convert, or for keys it cannot read: the longest readable prefix converted + the rest as typed
+        (after the keys themselves when the engine gave just those: an English word, github, 5B.9)."""
         cands = self.engine.convert(context, keys, **kw)
-        if cands or cands is None:
+        if cands is None or (cands and cands != [keys]):
             return cands
         n = self._readable(keys)
         if n == 0:
@@ -129,7 +130,7 @@ class Session:
         head = self.engine.convert(context, keys[:n], **{**kw, "prefix": None})
         if head is None:
             return None
-        return [c + keys[n:] for c in head] or [keys]
+        return (cands + [c + keys[n:] for c in head if c + keys[n:] != keys])[: kw.get("k", 5)] or [keys]
 
     def _readable(self, keys):
         """Length of the longest prefix of `keys` that splits into reading prefixes (0 if the engine can't tell)."""

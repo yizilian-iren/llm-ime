@@ -23,6 +23,7 @@ from ime.ngram import EXTRA_READINGS, Node, char_logp, char_readings_table, with
 
 MAX_COMBOS = 16  # reading combinations per token (polyphones multiply)
 SINGLE_PAGE = 5  # one whole syllable typed: this many of its characters come before any other candidate
+EN_WORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "en_words.txt")  # scripts/build_en_words.py
 TRAD_CHARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trad_chars.txt")  # scripts/build_trad_chars.py
 
 
@@ -32,7 +33,7 @@ class LLMEngine:
     def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
                  empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
                  split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
-                 swap_retries=1, alt_bonus=0.0, single_weight=0.0):
+                 swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False):
         self.model, self.tok = load(model)
         self.mix = _Cached(load(mix)[0]) if mix else None
         # With no context the mixed-in model is only guessing: it gets its own (usually smaller) weight.
@@ -68,6 +69,11 @@ class LLMEngine:
         # they are (ngram.char_freq) plus single_weight x the model's score; 0 leaves them to the search
         self.single_weight = float(single_weight)
         self.char_logp = char_logp() if self.single_weight else {}
+        # english: keys that are an English word (ime/en_words.txt: github, cpu, tracker) and not pinyin, not even
+        # pinyin typed halfway (long, fan, and bus on the way to bushi, stay Chinese) get the word as typed first
+        self.english = _english_words() if english else frozenset()
+        self.pinyin = {s for s in self.syllables if any(v in s for v in "aeiouv")}  # not n, m, hm of 嗯 呣
+        self.pinyin_starts = {s[:i] for s in self.pinyin for i in range(1, len(s) + 1)}
         self.root, self.tok_text = self._token_trie(model)
         self._ids, self._ctx_cache, self._ctx_logits = [], None, None
         self.stats = {"forward_ms": 0.0, "calls": 0}
@@ -290,7 +296,18 @@ class LLMEngine:
         out = _simplified_first(out)  # 這樣 after 这样 / 着养 / 遮阳 / 蒸养 (5B.7)
         if single:
             out = self._single_first(context, keys, mix, out)
+        if keys in self.english and not self._full_pinyin_so_far(keys):
+            out = [keys] + [t for t in out if t != keys]  # 5B.9
         return out[:k]
+
+    def _full_pinyin_so_far(self, keys):
+        """Whether keys are whole pinyin syllables, the last one maybe not typed to its end (long, bilibili, bus of
+        bushi, yes of yeshi; not github, cpu, cmd, follow)."""
+        ok = [True] + [False] * len(keys)
+        for i in range(1, len(keys) + 1):
+            ok[i] = any(ok[i - L] and keys[i - L : i] in self.pinyin for L in range(1, min(6, i) + 1))
+        n = len(keys)
+        return any(ok[i] and keys[i:] in self.pinyin_starts for i in range(max(0, n - 5), n)) or ok[n]
 
     def _single_first(self, context, keys, mix, out):
         """For keys that are one whole syllable: its characters ranked by log frequency + single_weight x their
@@ -540,6 +557,10 @@ def _simplified_first(texts, text=lambda t: t):
         _TRAD = frozenset("".join(line.strip() for line in open(TRAD_CHARS, encoding="utf-8") if not line.startswith("#")))
     trad = [any(c in _TRAD for c in text(t)) for t in texts]
     return [t for t, x in zip(texts, trad) if not x] + [t for t, x in zip(texts, trad) if x]
+
+
+def _english_words():
+    return frozenset(line.strip() for line in open(EN_WORDS, encoding="utf-8") if not line.startswith("#"))
 
 
 def _gb2312(text):
