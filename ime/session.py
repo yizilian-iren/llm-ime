@@ -3,11 +3,14 @@
 Every keystroke calls `type(context, keys, tag=None)`. The tag says who is typing (the engine service gives
 each connection its own); only a newer request with the same tag makes an older one stale, so two typists
 do not starve each other. The worker takes each tag's newest request in turn and for it:
-  1. quick: a narrow beam starting from the best candidate it last had for a prefix of these keys (minus
-     that candidate's last token, whose reading the new key may change), so only the tail is searched;
-     with the mixed-in model too, since without it the quick guess agrees with the full search far less
-     often (3A.2: 63% vs 40% of keys); top 3 only, and without the extra step that scores the end of the
-     sentence (both cut its time by about a quarter for 1 point of agreement);
+  1. quick: a narrow beam (top 3), with the mixed-in model too, since without it the quick guess agrees with the
+     full search far less often (3A.2: 63% vs 40% of keys). Keys as short as people type them at once (under
+     `prefix_keys`; on M3 94% of commits are 8 keys or fewer) are searched whole, scoring the end of the sentence
+     like the full search: the quick guess's first is the full search's first on 95% of keys, not 86% (5B.10:
+     starting from the last best and not scoring the end were most of the difference, a wider beam hardly any),
+     for 10-20% more time. Longer keys start from the best candidate it last had for a prefix of these keys
+     (minus that candidate's last token, whose reading the new key may change), so only the tail is searched,
+     without the extra step that scores the end (both cut its time by about a quarter there);
   2. full: the engine's normal search (k candidates); dropped between beam steps as soon as a newer keystroke
      arrives;
   3. more (when `more` > k, or with `segments`): after a pause of `more_delay` s with nothing else to do, the
@@ -16,8 +19,8 @@ do not starve each other. The worker takes each tag's newest request in turn and
      search was: 4A.5). With `segments`, it also carries the engine's candidates for the start of the keys
      (engine.segments: [(text, keys used)], 4A.10) as `segments=`, leaving out those that use all the keys
      and are already among the whole candidates.
-With `words` (ime.userwords.UserWords), the full answer is reranked by the user's words and their pieces for the
-start of the keys come first (5A.3); the quick guess is left alone, to stay quick.
+With `words` (ime.userwords.UserWords), the quick and full answers are reranked by the user's words, so a learned
+word shows while typing too (5B.10), and their pieces for the start of the keys come first (5A.3).
 Keys that cannot all be read as pinyin (a typo) still get candidates: the longest prefix that can is
 converted and the rest of the letters follow as typed (4A.4).
 `on_result(context, keys, candidates, stage)` is called from the worker thread with stage "quick" / "full" / "more",
@@ -32,12 +35,13 @@ import traceback
 
 class Session:
     def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False,
-                 words=None):
+                 words=None, prefix_keys=10):
         self.engine, self.on_result, self.k, self.words = engine, on_result, k, words
         self.more, self.more_delay = more, more_delay
         self.segments = segments and hasattr(engine, "segments")
         self.on_error = on_error or traceback.print_exc
         self.quick = quick or dict(k=3, beam=3, mix=True, eos=False)  # convert() options of the quick guess
+        self.prefix_keys = prefix_keys  # keys this long or longer: the quick guess starts from the last best
         self._cond = threading.Condition()
         self._pending = {}  # tag -> (context, keys), the newest request of each; first come, first served
         self._closed = False
@@ -119,11 +123,16 @@ class Session:
             return bool(self._pending) or self._closed
 
     def _quick(self, context, keys):
-        prefix = None
-        if self._last and self._last[0] == context and keys.startswith(self._last[1]) and self._last[2]:
-            prefix = list(self._last[2][:-1]) or None
-        cands = self._convert(context, keys, prefix=prefix, **self.quick)
+        if len(keys) < self.prefix_keys:
+            cands = self._convert(context, keys, **{**self.quick, "eos": True})
+        else:
+            prefix = None
+            if self._last and self._last[0] == context and keys.startswith(self._last[1]) and self._last[2]:
+                prefix = list(self._last[2][:-1]) or None
+            cands = self._convert(context, keys, prefix=prefix, **self.quick)
         self._remember(context, keys, cands)
+        if self.words and cands:
+            cands = self.words.rerank(context, keys, cands)
         return cands
 
     def _convert(self, context, keys, **kw):
