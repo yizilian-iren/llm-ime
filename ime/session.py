@@ -19,8 +19,9 @@ do not starve each other. The worker takes each tag's newest request in turn and
      search was: 4A.5). With `segments`, it also carries the engine's candidates for the start of the keys
      (engine.segments: [(text, keys used)], 4A.10) as `segments=`, leaving out those that use all the keys
      and are already among the whole candidates.
-With `words` (ime.userwords.UserWords), the quick and full answers are reranked by the user's words, so a learned
-word shows while typing too (5B.10), and their pieces for the start of the keys come first (5A.3).
+With `words` (ime.userwords.UserWords), the full answer is reranked by the user's words and their pieces for the
+start of the keys come first (5A.3); the quick guess puts words learned for all of the keys first (liji 力积 shows
+while typing), without the model call of the rerank (5B.10: that cost M3 54 -> 75 ms on the keys it applied to).
 Keys that cannot all be read as pinyin (a typo) still get candidates: the longest prefix that can is
 converted and the rest of the letters follow as typed (4A.4).
 `on_result(context, keys, candidates, stage)` is called from the worker thread with stage "quick" / "full" / "more",
@@ -132,7 +133,7 @@ class Session:
             cands = self._convert(context, keys, prefix=prefix, **self.quick)
         self._remember(context, keys, cands)
         if self.words and cands:
-            cands = self.words.rerank(context, keys, cands)
+            cands = self.words.whole(keys, cands)
         return cands
 
     def _convert(self, context, keys, **kw):

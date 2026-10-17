@@ -213,6 +213,14 @@ class UserWords:
         head = ahead + [cands[0]] + after
         return head + [c for c in cands[1:] if c not in head]
 
+    def whole(self, keys, cands):
+        """cands with the words learned for all of `keys` first (the most used first), no model call: for the quick
+        guess, which must stay quick (5B.10: rerank there cost M3 54 -> 75 ms on keys with learned keys in them)."""
+        with self.lock:
+            mine = sorted(((self.bonus(c, t), w) for w, (c, t) in self.words.get(keys, {}).items()), reverse=True)
+        front = [w for _b, w in mine]
+        return front + [c for c in cands if c not in front] if front else cands
+
     def segments(self, keys, segs):
         """Learned words for the start of `keys` (not all of them) in front of the engine's pieces [(text, keys used)]."""
         with self.lock:
