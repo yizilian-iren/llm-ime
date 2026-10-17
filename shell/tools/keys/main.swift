@@ -342,6 +342,25 @@ wait(0.2)
 check(Engine.learned == ["abcd F7 F:abcd", "ab F:ab F:ab"], "paused: nothing learned: \(Engine.learned)")
 TypingLog.shared.paused = false
 UserDefaults.standard.removeObject(forKey: "logPaused")
+// 5A.5: keys given up on, then typed again in pieces: the pieces are learned together for those keys.
+func retyped(_ keys: [String]) -> [String] {
+    Engine.learned = []
+    for k in keys {
+        if ["space", "esc", "delete", "return"].contains(k) { press([k]); wait(0.05) } else { press(letters(k)); wait(0.3) }
+    }
+    press(["esc"]); wait(0.2)  // not composing: writes the last record
+    return Engine.learned
+}
+var l = retyped(["abcd", "esc", "ab", "space", "cd", "space", "ef", "space"])
+check(l == ["ab F:ab F:ab", "cd F:cd F:cd", "abcd F:abF:cd F:abcd", "ef F:ef F:ef"], "Esc, then ab, cd: \(l)")
+l = retyped(["abcd", "delete", "delete", "space", "cd", "space"])
+check(l == ["ab F:ab F:ab", "cd F:cd F:cd", "abcd F:abF:cd F:abcd"], "typed more, deleted back: \(l)")
+l = retyped(["abcd", "space", "delete", "delete", "cd", "space"])
+check(l == ["cd F:cd F:cd", "abcd F:abF:cd F:abcd"], "a commit deleted in part: \(l)")
+l = retyped(["ab", "space", "cd", "space"])
+check(l == ["ab F:ab F:ab", "cd F:cd F:cd"], "nothing given up: picks alone: \(l)")
+l = retyped(["abcd", "esc", "ab", "space", "x", "return", "cd", "space"])
+check(l == ["ab F:ab F:ab", "cd F:cd F:cd"], "the letters in between end it: \(l)")
 // Deleting everything (the menu item) empties the folder and clears the engine's word list.
 ctl.deleteLog(nil); TypingLog.shared.flush(); wait(0.2)
 check(((try? FileManager.default.contentsOfDirectory(atPath: logDir)) ?? ["?"]).isEmpty, "deleted all")

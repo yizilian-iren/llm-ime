@@ -25,10 +25,14 @@ final class InputController: IMKInputController {
     private var segmentEnds: [Int] = []      // after the whole candidates: the keys each start-of-keys one uses
     private var comp: Composition?           // this composition, for the typing log (5A.2); nil: not logged
     private var waitStart = Date()
-    private var logged: ([String: Any], Date, (String, String, String)?)?  // the last commit's record, written at the
-                                             // next key but delete, and the pick to learn from (5A.3) then
+    private var logged: ([String: Any], Date, [(String, String, String)])?  // the last commit's record, written at the
+                                             // next key but delete, and the picks to learn from (5A.3) then
     private var pieces: (keys: String, text: String, first: String)?  // start-of-keys picks so far (4A.10)
     private var deletesAfter = 0             // deletes right after that commit (it was wrong)
+    private var longest = ""                 // the most keys this composition had (more than now: some deleted, 5A.5)
+    private var longestFirst = ""            // the first candidate shown for them
+    private var retry: (keys: String, first: String, text: String, used: Int, at: Date)?  // keys given up on, and
+                                             // what was committed since (5A.5)
     private var loggedTimer: Timer?
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
@@ -79,6 +83,7 @@ final class InputController: IMKInputController {
             keys.removeLast()
             comp?.event("del")
             if keys.isEmpty {
+                gaveUp(longest, first: longestFirst)
                 log(how: "deleted", text: nil)
                 reset(client)
             } else {
@@ -87,6 +92,7 @@ final class InputController: IMKInputController {
             return true
         case 53:  // esc
             guard composing else { return false }
+            gaveUp(longest, first: longestFirst)
             log(how: "esc", text: nil)
             reset(client)
             return true
@@ -254,6 +260,7 @@ final class InputController: IMKInputController {
                              replacementRange: NSRange(location: NSNotFound, length: 0))
         wantNextPage = false
         picked = false
+        if keys.count > longest.count { (longest, longestFirst) = (keys, "") }
         let ctx = context ?? String(Self.history.suffix(64))
         requestId = EngineClient.shared.type(context: ctx, keys: keys)
         comp?.context = ctx
@@ -288,6 +295,7 @@ final class InputController: IMKInputController {
         model.candidates = candidates
         segmentEnds = []
         model.selected = 0
+        if keys == longest, let f = candidates.first { longestFirst = f }
         if waiting != nil && !candidates.isEmpty && (!waitForFull || stage != "quick") {
             replay(client, force: fullGivenUp)
             if keys.isEmpty { return }
@@ -339,6 +347,8 @@ final class InputController: IMKInputController {
         pieces = (p.keys + keys.prefix(end), p.text + text, p.first)
         if let c = comp { comp = Composition(app: c.app) }  // the rest of the keys: a record of its own
         keys = String(keys.dropFirst(end))
+        longest = String(longest.dropFirst(end))
+        longestFirst = ""
         if context != nil { context! += text }
         model = CandidateModel()
         segmentEnds = []
@@ -349,13 +359,17 @@ final class InputController: IMKInputController {
     }
 
     private func commit(_ text: String, _ client: IMKTextInput, how: String, picked: Int? = nil) {
-        var learn: (String, String, String)?
+        var learns: [(String, String, String)] = []
         if picked != nil, let first = model.candidates.first {  // a candidate, not the letters
             let p = pieces ?? ("", "", first)
-            learn = (p.keys + keys, p.text + text, p.first)
+            if longest.count > keys.count { gaveUp(p.keys + longest, first: p.text + longestFirst) }  // typed more, deleted back
+            learns.append((p.keys + keys, p.text + text, p.first))
+            learns += retried(p.keys + keys, p.text + text)
+        } else {
+            retry = nil
         }
         pieces = nil
-        log(how: how, picked: picked, text: text, learn: learn)
+        log(how: how, picked: picked, text: text, learns: learns)
         insert(text, client)
         if text != keys { EngineClient.shared.commit(text) }
         reset(client, clearMarked: false)
@@ -372,6 +386,8 @@ final class InputController: IMKInputController {
                                  replacementRange: NSRange(location: NSNotFound, length: 0))
         }
         keys = ""
+        longest = ""
+        longestFirst = ""
         context = nil
         comp = nil
         pieces = nil
@@ -390,24 +406,51 @@ final class InputController: IMKInputController {
     /// Keeps this composition's record until the next key, which tells whether it was deleted right away; a pick
     /// is learned from (5A.3) only if it was not. Paused or an excluded app: neither.
     private func log(how: String, picked: Int? = nil, text: String?, used: Int? = nil,
-                     learn: (String, String, String)? = nil) {
+                     learns: [(String, String, String)] = []) {
         guard let comp = comp else { return }
         writeLogged()
         logged = (comp.record(keys: keys, model: model, stage: stage, how: how, picked: picked, text: text, used: used),
-                  Date(), learn)
+                  Date(), learns)
         loggedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.writeLogged() }
     }
 
     private func writeLogged() {
         loggedTimer?.invalidate()
         loggedTimer = nil
-        guard let (r, date, learn) = logged else { return }
+        guard let (r, date, learns) = logged else { return }
         var record = r
         record["deleted_after"] = deletesAfter
-        if let (k, t, f) = learn, deletesAfter == 0 { EngineClient.shared.learn(keys: k, text: t, first: f) }
+        if deletesAfter == 0 {
+            for (k, t, f) in learns { EngineClient.shared.learn(keys: k, text: t, first: f) }
+        } else if !learns.isEmpty, let k = r["keys"] as? String, let t = r["text"] as? String {
+            let kept = String(t.dropLast(deletesAfter))  // what was left of it stays, its keys taken as typed again
+            gaveUp(k, first: t, text: kept, used: k.count * kept.count / t.count)
+        }
         logged = nil
         deletesAfter = 0
         TypingLog.shared.write(record, at: date)
+    }
+
+    // MARK: given up and typed again (5A.5)
+
+    /// The candidates for `keys` were given up on (Esc, deleted, typed more and deleted back, a commit deleted right
+    /// after): what is committed next, until as many keys were typed again, is what the user meant (`text`: of a
+    /// commit, what was left of it). Within 20 s of each other; anything but a candidate ends it.
+    private func gaveUp(_ keys: String, first: String, text: String = "", used: Int = 0) {
+        retry = keys.count >= 2 ? (keys, first, text, used, Date()) : nil
+    }
+
+    /// A commit after keys were given up on: with what was committed since, learned for those keys. The engine keeps
+    /// it only where it reads them, so one character at a time is learned once the last one is in (鸣 then 潮 for
+    /// mingchao: 鸣潮). The first commit alone is a pick like any, learned as one already.
+    private func retried(_ keys: String, _ text: String) -> [(String, String, String)] {
+        guard var r = retry, Date().timeIntervalSince(r.at) < 20 else { retry = nil; return [] }
+        let alone = r.text.isEmpty
+        r.text += text
+        r.used += keys.count
+        r.at = Date()
+        retry = r.used < r.keys.count ? r : nil
+        return alone ? [] : [(r.keys, r.text, r.first)]
     }
 
     // MARK: reading the app's text
