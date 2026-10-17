@@ -33,7 +33,8 @@ class LLMEngine:
     def __init__(self, model="models/qwen3-0.6b-base-4bit", beam=12, abbrev_penalty=1.0, progress_bonus=3.0,
                  empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
                  split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
-                 swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False):
+                 swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False, typo_penalty=0.0,
+                 typo_rows=3):
         self.model, self.tok = load(model)
         self.mix = _Cached(load(mix)[0]) if mix else None
         # With no context the mixed-in model is only guessing: it gets its own (usually smaller) weight.
@@ -74,6 +75,11 @@ class LLMEngine:
         self.english = _english_words() if english else frozenset()
         self.pinyin = {s for s in self.syllables if any(v in s for v in "aeiouv")}  # not n, m, hm of 嗯 呣
         self.pinyin_starts = {s[:i] for s in self.pinyin for i in range(1, len(s) + 1)}
+        # typo_penalty: nats for reading a typed syllable with one key too many, one missing, or one hit next to the
+        # right one (yiijing, fangkeshijao, hainebg; 5B.8); 0 turns it off. Like a swap: the syllable is read whole,
+        # and is searched again with the keys fixed (swap_margin) for the fine-tuned model.
+        self.typo_penalty, self.typo_rows = float(typo_penalty), int(typo_rows)
+        self.typos = _typos(self.pinyin, self.prefixes, self.typo_penalty) if self.typo_penalty else {}
         self.root, self.tok_text = self._token_trie(model)
         self._ids, self._ctx_cache, self._ctx_logits = [], None, None
         self.stats = {"forward_ms": 0.0, "calls": 0}
@@ -131,15 +137,15 @@ class LLMEngine:
         out = {}
         n = len(keys)
 
-        def walk(node, q, ab, ks, sw, spans):
+        def walk(node, q, ab, ks, sw, spans, tf=None):
             # ks: the keys as read (keys, or keys with sw and sw + 1 exchanged); the token may end only past the swap.
-            # spans: (start, length) of each syllable read so far in this token
+            # spans: (start, length) of each syllable read so far in this token; tf: the token's typo fix, if any
             if sw is None or q >= sw + 2:
-                fix = () if sw is None else ((sw, sw + 2, ks[sw : sw + 2], self.swap_penalty),)
+                fix = ((sw, sw + 2, ks[sw : sw + 2], self.swap_penalty),) if sw is not None else (tf,) if tf else ()
                 for t in node.words:
                     alt, c = node.alt.get(t), ab
                     if alt:
-                        if not alts or sw is not None or any(spans[i][1] != len(sy) for i, _std, sy in alt):
+                        if not alts or sw is not None or tf or any(spans[i][1] != len(sy) for i, _std, sy in alt):
                             continue
                         c -= self.alt_bonus * len(alt)
                         fix_t = tuple((spans[i][0], spans[i][0] + len(sy), std, -self.alt_bonus) for i, std, sy in alt)
@@ -162,8 +168,15 @@ class LLMEngine:
                         cost = self.alpha
                         if self.split_penalty and any(ks[q:j] in self.syllables for j in range(q + L + 1, min(q + 7, n + 1))):
                             cost += self.split_penalty
-                    walk(kid, q + L, ab + cost, ks, sw, spans + ((q, L),))
-            if sw is None and swaps and self.swap_penalty:
+                    walk(kid, q + L, ab + cost, ks, sw, spans + ((q, L),), tf)
+            if sw is None and tf is None and swaps and self.typo_penalty:
+                # one syllable from q typed with one key too many, missing or next to the right one, read whole
+                # (not keys a swap reads as a syllable from q: zheyagn is 这样 swapped, not yag 样 + n 呢)
+                for m in range(max(2, swap_end(q) - q + 1), min(8, n - q + 1)):
+                    for sy, cost in self.typos.get(keys[q : q + m], ()):
+                        if sy in node.kids:
+                            walk(node.kids[sy], q + m, ab + cost, ks, None, spans + ((q, m),), (q, q + m, sy, cost))
+            if sw is None and tf is None and swaps and self.swap_penalty:
                 # the swap starts in the syllable read from q (whole, swapped letters and all)
                 for j in range(q, min(q + 6, n - 1)):
                     if keys[j] == keys[j + 1]:
@@ -173,6 +186,16 @@ class LLMEngine:
                         L = len(sy)
                         if q + L > j and ks2[q : q + L] == sy:
                             walk(node.kids[sy], q + L, ab + self.swap_penalty, ks2, j, spans + ((q, L),))
+
+        swap_cache = {}
+
+        def swap_end(q):  # where the longest syllable from q read with two adjacent keys in it exchanged ends (or q)
+            if q not in swap_cache:
+                swap_cache[q] = max([q] + [q + L for j in range(q, min(q + 6, n - 1)) if keys[j] != keys[j + 1]
+                                           for L in range(j - q + 2, 7)
+                                           if (keys[:j] + keys[j + 1] + keys[j] + keys[j + 2:])[q : q + L] in self.syllables]
+                                    if self.swap_penalty else [q])
+            return swap_cache[q]
 
         walk(self.root, p, 0.0, keys, None, ())
         ends = np.array([e for e, _ in out], dtype=np.int32)
@@ -184,9 +207,12 @@ class LLMEngine:
 
     def feasible(self, keys, swaps=True):  # alts need nothing here: en etc. are readings of other characters
         """feasible[p]: keys[p:] can be split into reading prefixes, or (with swap_penalty) whole syllables
-        with two adjacent keys exchanged (else a hypothesis at p is a dead end)."""
+        with two adjacent keys exchanged, or (typo_penalty) typed with one key off (else a hypothesis at p is a dead end)."""
         n = len(keys)
-        jumps = [[] for _ in range(n)]  # p -> ends of spans readable with one swap
+        jumps = [[] for _ in range(n)]  # p -> ends of spans readable with one swap or typo
+        if swaps and self.typos:
+            for s in range(n):
+                jumps[s] += [s + m for m in range(2, min(8, n - s + 1)) if keys[s : s + m] in self.typos]
         if swaps and self.swap_penalty:
             for j in range(n - 1):
                 if keys[j] == keys[j + 1]:
@@ -283,7 +309,7 @@ class LLMEngine:
                                          prompt_keys=_apply(keys, fix) if alt else None)
                     if again is None:
                         return None
-                    found += [(score - cost, t, path, fix) for score, t, path, f in again if f or not alt]
+                    found += [(score - cost, t, _typed_path(path, swaps), fix) for score, t, path, f in again if f or not alt]
                     self.stats["swap_retries"] = self.stats.get("swap_retries", 0) + 1
                 found.sort(key=lambda f: f[:3], reverse=True)
         if found is None:
@@ -445,15 +471,21 @@ class LLMEngine:
 
             finish_now = not (self.keys_in_prompt and eos)  # else one more step scores the end of the sentence
             nxt, parents, tids = [], [], []
+            typo_rows = 0
             for i, j in enumerate(order):
                 if E[j] == n and finish_now:
                     finished.append(grown(j))
-                elif len(nxt) < beam:
+                elif len(nxt) - typo_rows < beam:
                     s, text, path, fix = grown(j)
+                    if fix and any(sorted(keys[a:b]) != sorted(new) for a, b, new, _c in fix):
+                        # typo readings get a few rows of their own, beside the beam of the keys as typed (5B.8)
+                        if typo_rows >= self.typo_rows:
+                            continue
+                        typo_rows += 1
                     nxt.append((s, text, int(E[j]), path, fix))
                     parents.append(int(P[j]))
                     tids.append(int(T[j]))
-                if len(nxt) >= beam:  # the beam is full: only finished ones still count, up to k * 3 of them
+                if len(nxt) - typo_rows >= beam:  # the beam is full: only finished ones still count, up to k * 3 of them
                     if finish_now and len(finished) < k * 3:
                         rest = order[i + 1 :]
                         finished += [grown(j) for j in rest[E[rest] == n][: k * 3 - len(finished)]]
@@ -575,6 +607,66 @@ def _apply(keys, fix):
         out += keys[i:s] + new
         i = e
     return "".join(out) + keys[i:]
+
+
+def _typed_path(path, fix):
+    """A path [(token, key end)] searched on _apply(keys, fix) with its key ends moved back onto keys (a typo fix
+    can change the length)."""
+    fix = sorted(fix)
+    if all(e - s == len(new) for s, e, new, _c in fix):
+        return path
+
+    def back(p):
+        d = 0
+        for s, e, new, _c in fix:
+            if p <= s + d:
+                break
+            if p < s + d + len(new):
+                return e if p - d > s else s  # inside the fixed keys: to its nearer end
+            d += len(new) - (e - s)
+        return p - d
+
+    return tuple((t, back(p)) for t, p in path)
+
+
+ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")
+KEY_AT = {c: (y, x + (0, 0.25, 0.75)[y]) for y, row in enumerate(ROWS) for x, c in enumerate(row)}
+
+
+def adjacent(a, b):
+    """Keys next to each other on a QWERTY keyboard (diagonals too)."""
+    (ya, xa), (yb, xb) = KEY_AT[a], KEY_AT[b]
+    return a != b and (abs(xa - xb) == 1 if ya == yb else abs(ya - yb) == 1 and abs(xa - xb) <= 0.75)
+
+
+def _typos(syllables, prefixes, penalty):
+    """{typed keys: ((syllable, cost), ...)}: each syllable typed with one key off, as the typing log shows them (5B.8):
+    one key too many inside it or its last vowel twice (penalty, +1 when not next to or the same as a neighbour),
+    one missing, or one next to the right one, not its first key (a different first key is mostly another word).
+    Only keys that cannot be read as typed at all (not a reading prefix, so never an abbreviation or a syllable
+    typed halfway), with a vowel, two keys or more."""
+    out = {}
+
+    def add(typed, sy, cost):
+        if typed[:-1] == sy and typed[-1] not in "aeiouv":
+            return  # a consonant after the syllable starts the next character (duann: 断你)
+        if len(typed) >= 2 and typed not in prefixes and any(v in typed for v in "aeiouv"):
+            if out.setdefault(typed, {}).get(sy, 99) > cost:
+                out[typed][sy] = cost
+
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    for sy in syllables:
+        for i in range(1, len(sy)):
+            for c in letters:
+                near = c in (sy[i - 1], sy[i]) or adjacent(c, sy[i - 1]) or adjacent(c, sy[i])
+                add(sy[:i] + c + sy[i:], sy, penalty if near else penalty + 1)
+            add(sy[:i] + sy[i + 1 :], sy, penalty)
+            for c in letters:
+                if adjacent(c, sy[i]):
+                    add(sy[:i] + c + sy[i + 1 :], sy, penalty)
+        if sy[-1] in "aeiouv":
+            add(sy + sy[-1], sy, penalty)  # yii
+    return {t: tuple(sorted(d.items(), key=lambda x: x[1])) for t, d in out.items()}
 
 
 _TRAD = None

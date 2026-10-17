@@ -54,7 +54,8 @@ def key_events(r):
 
 
 def episodes(records):
-    """(before, after, where) for each time keys were deleted and typed again."""
+    """(before, after, where, done) for each time keys were deleted and typed again; done: the record that committed
+    all of the keys after, else None."""
     out = []
     for i, r in enumerate(records):
         evs = key_events(r)
@@ -83,10 +84,11 @@ def episodes(records):
                 nxt = records[i + 1]
                 gap = (when(nxt) - when(r)).total_seconds() - nxt["ms"] / 1000
                 if gap <= RETYPE_S and nxt.get("text") is not None and nxt.get("keys") and last:
-                    out.append((last, nxt["keys"], "given up"))
+                    out.append((last, nxt["keys"], "given up", nxt))
+        done = r if not given_up and r.get("text") is not None and r.get("keys") == final else None
         for before, followed in runs:
             if followed and final:
-                out.append((before, final, "deleted"))
+                out.append((before, final, "deleted", done))
     return out
 
 
@@ -160,6 +162,29 @@ def kind(op, a, b, ops, k):
     return "漏辅音"
 
 
+KIND = {"多按别的键": "extra", "多按相邻键": "extra", "多按一次(重复键)": "extra", "漏元音": "miss", "漏辅音": "miss",
+        "漏 zh/ch/sh 的 h": "miss", "漏 ng 的 g": "miss", "漏按重复键": "miss", "按成相邻键": "near", "颠倒两个键": "swap",
+        "按错键(不相邻)": "other"}
+
+
+def cases(records):
+    """Keys typed with one error, as the user would have gone on typing them, and what was committed in the end:
+    [(context, keys, text, kind)] (kind extra / miss / near / swap / other), one per delete-and-retype that differs by
+    one edit from the keys committed (not at their first key). keys: the keys before the deletes + the rest of the
+    keys committed; for the 5B.8 check, run on M3 (scripts/typo_eval.py)."""
+    out = []
+    for before, after, _where, done in episodes(records):
+        if done is None or len(before) < 2:
+            continue
+        j, dist, ops = nearest_prefix(before, after)
+        edits = [(k, o) for k, o in enumerate(ops) if o[0] != "same"]
+        if dist != 1 or edits[0][1][3] == 0:
+            continue
+        k, o = edits[0]
+        out.append((done.get("context") or "", before + after[j:], done["text"], KIND[kind(o, before, after, ops, k)]))
+    return out
+
+
 def end(op):
     """The key of the keys before at which the error shows: the wrong key, the second of a swap, the key after a miss."""
     return op[3] + 1 if op[0] == "swap" else op[3]
@@ -187,7 +212,7 @@ def main():
     tail = collections.Counter()
     pairs = collections.Counter()
     later = collections.Counter()     # kinds of errors typed past before the deletes
-    for before, after, where in eps:
+    for before, after, where, _done in eps:
         j, dist, ops = nearest_prefix(before, after)
         edits = [(k, o) for k, o in enumerate(ops) if o[0] != "same"]
         if dist == 0:

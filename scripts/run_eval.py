@@ -4,6 +4,9 @@
 
 Forms full_swap / mixed_swap: the full / mixed keys with two adjacent letters of one typed syllable exchanged
 (one per item, fixed by its id; items with no such pair are left out), for the swap tolerance (5B.1).
+Forms full_extra / full_miss / full_near (and mixed_*): one typed syllable of two keys or more with one key too
+many (its neighbour again, or a key next to one), one missing, or one hit next to the right one, never its first
+key (the typing log's errors, 5B.8; one per item, fixed by its id).
 
 Accuracy: one call per item with the whole key string.
 Latency: on the first --latency items (initials form), type key by key and time every call.
@@ -43,8 +46,33 @@ def swapped(r, form):
     return "".join(parts[:i]) + s[:j] + s[j + 1] + s[j] + s[j + 2:] + "".join(parts[i + 1:])
 
 
+def typo(r, form, kind):
+    """r's full / mixed keys with one key off in one typed syllable (kind extra / miss / near), or None if none can be."""
+    from ime.llm import ROWS, adjacent
+    parts = r["sylls"] if form == "full" else pinyin.mixed_parts(r["sylls"], random.Random(r["id"]))
+    rnd = random.Random(f"{r['id']}-{form}-{kind}")
+    where = [(i, j) for i, s in enumerate(parts) for j in range(1, len(s)) if len(s) >= 2]
+    if not where:
+        return None
+    i, j = rnd.choice(where)
+    s = parts[i]
+    if kind == "extra":
+        c = rnd.choice([s[j - 1]] + [k for k in "".join(ROWS) if adjacent(k, s[j - 1]) or adjacent(k, s[j])])
+        s = s[:j] + c + s[j:]
+    elif kind == "miss":
+        s = s[:j] + s[j + 1 :]
+    else:
+        s = s[:j] + rnd.choice([k for k in "".join(ROWS) if adjacent(k, s[j])]) + s[j + 1 :]
+    return "".join(parts[:i]) + s + "".join(parts[i + 1 :])
+
+
 def keys_of(r, form):
-    return swapped(r, form.removesuffix("_swap")) if form.endswith("_swap") else r[form]
+    if form.endswith("_swap"):
+        return swapped(r, form.removesuffix("_swap"))
+    for kind in ("extra", "miss", "near"):
+        if form.endswith("_" + kind):
+            return typo(r, form.removesuffix("_" + kind), kind)
+    return r[form]
 
 
 def ctx_bucket(ctx):

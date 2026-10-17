@@ -34,6 +34,7 @@ def load(name: str, **kw) -> Engine:
                    swap_penalty=3.0,  # zhognguo read as 中国 (5B.1)
                    alt_bonus=6.0,  # en read as 嗯: enne 嗯呢, enen 嗯嗯 first, en 嗯 in the top 3 (5B.4)
                    single_weight=0.6,  # one syllable typed: common characters first, wo 我 not 沃 (5B.5)
-                   english=True)  # github, cpu, tracker as typed first when not pinyin (5B.9)
+                   english=True,  # github, cpu, tracker as typed first when not pinyin (5B.9)
+                   typo_penalty=4.0, swap_retries=2)  # yiijingshi 已经是, kanyuix 看一下, shibnush 是不是 (5B.8)
         return LLMEngine(**{**cfg, **kw})
     raise ValueError(f"unknown engine {name}")
