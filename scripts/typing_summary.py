@@ -167,6 +167,23 @@ def pct(xs, q):
     return xs[min(len(xs) - 1, int(q * len(xs)))]
 
 
+def space_seen(commits):
+    """Space commits against what was on screen when space was pressed (5A.4): the first candidate then (records
+    with `seen`, without a moved selection), and commits of an answer for other keys than the ones committed."""
+    spaces = [r for r in commits if r["how"] == "space"]
+    stale = sum(1 for r in spaces if r.get("answers") and r["answers"][-1][0] != len(r["keys"]))
+    seen = [r for r in spaces if r.get("seen") and not any(e[1] in ("page", "move") for e in r["events"])]
+    if not spaces:
+        return []
+    line = f"空格上屏 {len(spaces)} 次，上的是别的键串的候选 {stale} 次"
+    if seen:
+        differ = sum(1 for r in seen if r["seen"]["first"] != r["text"])
+        fewer = sum(1 for r in seen if r["seen"]["first"] is not None and r["seen"]["stage"] == "")
+        line += (f"；按空格时屏上的第 1 个不是上屏的 {differ} / {len(seen)} 次（{100 * differ / len(seen):.0f}%），"
+                 f"那时屏上还是少键的候选 {fewer} 次")
+    return [line + "。"]
+
+
 def summarize(day, records):
     cats = classify(records)
     commits = [r for r in records if r.get("text") is not None]
@@ -182,6 +199,7 @@ def summarize(day, records):
     if quick:
         out.append(f"每键到第一批候选 p50 {pct(quick, .5)} / p90 {pct(quick, .9)} ms；"
                    f"细算 p50 {pct(full, .5)} / p90 {pct(full, .9)} ms。")
+    out += space_seen(commits)
     out += ["", "| 费力点 | 次数 | 占上屏 |", "|---|---|---|"]
     for key, name, _ in CATEGORIES:
         n = len(cats.get(key, []))

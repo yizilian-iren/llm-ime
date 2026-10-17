@@ -190,6 +190,33 @@ t = run("silent", ["d", "space", "a"], settle: 1.6)
 check(t == "d", "engine silent -> the letters: \(t)")  // "a" starts a new composition
 press(["return"])
 check(client.text == "da", "then return commits the new letters: \(client.text)")
+// 5A.4: typed fast, the last key's answer not there yet: the candidates on screen are for fewer keys; space waits
+// for the whole keys' answer instead of committing those, and so do digits and punctuation.
+Engine.quick = 0.08; Engine.full = 0.12
+for (keys, want) in [(["b", "space"], ["F:ab"]), (["b", "1"], ["Q:ab", "F:ab"]), (["b", ","], ["Q:ab,", "F:ab,"])] {
+    client.text = ""
+    press(["a"]); wait(0.3)  // a's full answer on screen
+    press(keys); wait(0.5)
+    check(want.contains(client.text), "a, then \(keys) at once -> for ab: \(client.text)")
+}
+// Keys 50 ms apart, each one's full answer there before the next key, the last key and space at once: the whole keys.
+Engine.quick = 0.02; Engine.full = 0.035
+for _ in 0..<5 {
+    client.text = ""
+    for k in letters("shiho") { press([k]); wait(0.05) }
+    press(["u", "space"]); wait(0.5)
+    check(client.text == "F:shihou", "50 ms apart + space -> the whole keys: \(client.text)")
+}
+// The full answer late and the quick one too: no candidate for fewer keys after the 0.4 s either.
+Engine.quick = 0.6; Engine.full = 3
+client.text = ""
+press(["a"]); wait(0.8)
+let t1 = Date()
+press(["b", "space"])
+while client.text.isEmpty && Date().timeIntervalSince(t1) < 2 { wait(0.01) }
+check(client.text == "Q:ab", "quick answer late -> its first, not a's: \(client.text)")
+check(Date().timeIntervalSince(t1) < 0.75, "at once when it comes, no second wait for the full: \(Date().timeIntervalSince(t1))")
+wait(3)
 // A key only the app can act on (delete) ends the wait: what there is goes first, then the app deletes.
 Engine.quick = 0.3; Engine.full = 0.6
 t = run("delete", ["d", "space", "delete"], settle: 1)
@@ -278,6 +305,10 @@ if rs.count == 4 {
     let evs = ((b["events"] as? [[Any]]) ?? []).map { $0[1] as? String ?? "" }
     check(b["keys"] as? String == "abc" && evs == ["a", "b", "x", "del", "c"], "deleted and typed again: \(evs)")
     check(b["deleted_after"] as? Int == 2 && b["text"] as? String == "F:abc", "deleted after the commit: \(b)")
+    let seen = b["seen"] as? [String: Any]
+    check(seen?["first"] as? String == "F:abc" && seen?["stage"] as? String == "more" && seen?["keys"] as? Int == 3,
+          "what space was pressed on: \(String(describing: seen))")
+    check(a["seen"] == nil, "no space, no seen: \(a)")
     check(c["keys"] as? String == "z" && c["text"] as? String == "z" && c["deleted_after"] as? Int == 0, "enter: \(c)")
     check(d["keys"] as? String == "q" && d["text"] is NSNull, "esc: \(d)")
 }
@@ -293,13 +324,22 @@ for row in ["| 没选第 1 个 / 翻了页 | 1 |", "| 打了又删、重打 | 1 
     check(md.contains(row), "summary has \(row)")
 }
 check(md.contains("上屏 3 次") && md.contains("放弃（Esc / 删光）1 次"), "summary totals")
+check(md.contains("空格上屏 1 次，上的是别的键串的候选 0 次；按空格时屏上的第 1 个不是上屏的 0 / 1 次"), "summary: space")
+// 5A.4: space pressed on a's candidates, b's answer not there yet: logged as seen for 1 key, committed for ab.
+press(["a"]); wait(0.3); press(["b", "space"]); wait(0.5)
+press(["esc"]); TypingLog.shared.flush(); wait(0.2)
+rs = records()
+let last = rs.last ?? [:]
+let seen = last["seen"] as? [String: Any]
+check(rs.count == 5 && last["text"] as? String == "F:ab" && seen?["first"] as? String == "F:a"
+      && seen?["stage"] as? String == "" && seen?["keys"] as? Int == 1, "seen for fewer keys: \(last)")
 // Paused: nothing written.
 TypingLog.shared.paused = true
 press(letters("pp")); wait(0.2); press(["space", "esc"])
 TypingLog.shared.flush()
-check(records().count == 4, "paused: no new record (\(records().count))")
+check(records().count == 5, "paused: no new record (\(records().count))")
 wait(0.2)
-check(Engine.learned == ["abcd F7 F:abcd"], "paused: nothing learned: \(Engine.learned)")
+check(Engine.learned == ["abcd F7 F:abcd", "ab F:ab F:ab"], "paused: nothing learned: \(Engine.learned)")
 TypingLog.shared.paused = false
 UserDefaults.standard.removeObject(forKey: "logPaused")
 // Deleting everything (the menu item) empties the folder and clears the engine's word list.

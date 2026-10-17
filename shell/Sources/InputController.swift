@@ -12,12 +12,14 @@ final class InputController: IMKInputController {
     private var context: String?             // text before the cursor when this composition began
     private var model = CandidateModel()
     private var requestId = 0
-    private var stage = ""
+    private var stage = ""                   // of the candidates shown; "" after a key: they are for fewer keys (5A.4)
+    private var answeredKeys = 0             // how many keys the candidates shown are for
     private var wantNextPage = false         // asked for the next page before the engine's further pages came
     private var shiftAlone = false
     private var waiting: [NSEvent]?          // keys pressed while waiting for the engine's answer, in order
     private var waitForFull = false          // waiting for the full answer (space), not only the first one
     private var waitTimer: Timer?
+    private var fullGivenUp = false          // space waited 0.4 s with nothing for these keys: the first answer commits
     private var noWaiting = false            // replaying after the engine did not answer: commit what there is
     private var picked = false               // the user moved the selection: space commits that, no waiting
     private var segmentEnds: [Int] = []      // after the whole candidates: the keys each start-of-keys one uses
@@ -48,6 +50,9 @@ final class InputController: IMKInputController {
         guard event.type == .keyDown else { return false }
         shiftAlone = false
         if event.keyCode != 51 { writeLogged() }
+        if event.keyCode == 49, waiting == nil, !keys.isEmpty, comp?.seen == nil {  // what space was pressed on (5A.4)
+            comp?.seen = (model.candidates.first, stage, answeredKeys)
+        }
         if waiting != nil {
             if Self.replayable(event) {
                 waiting!.append(event)
@@ -147,13 +152,15 @@ final class InputController: IMKInputController {
     /// A key that commits while there is no candidate yet (typed fast: "d" then space) waits for the engine's
     /// first answer instead of committing the letters; space also waits for the full answer, up to 0.4 s, unless
     /// the user picked a candidate (D-024: the quick guess's first is often wrong). Keys pressed meanwhile queue.
+    /// Candidates still for fewer keys (typed fast: the last key's answer not there yet) count as none (5A.4).
     private func waitForAnswer(_ event: NSEvent, full: Bool = false) -> Bool {
         guard !keys.isEmpty, !noWaiting, EngineClient.shared.connected else { return false }
         let needFull = full && !picked && (stage == "" || stage == "quick")
-        guard model.candidates.isEmpty || needFull else { return false }
+        guard !hasAnswer || needFull else { return false }
         waiting = [event]
         waitStart = Date()
         waitForFull = needFull
+        fullGivenUp = false
         waitTimer?.invalidate()
         waitTimer = Timer.scheduledTimer(withTimeInterval: needFull ? 0.4 : 1.0, repeats: false) { [weak self] _ in
             self?.waitTimedOut()
@@ -165,8 +172,9 @@ final class InputController: IMKInputController {
     /// No answer by then: the letters, as without the engine.
     private func waitTimedOut() {
         guard let client = currentClient else { return }
-        if waitForFull && model.candidates.isEmpty {
+        if waitForFull && !hasAnswer {
             waitForFull = false
+            fullGivenUp = true
             waitTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
                 self?.waitTimedOut()
             }
@@ -174,6 +182,9 @@ final class InputController: IMKInputController {
         }
         replay(client, force: true)
     }
+
+    /// Candidates for the keys as they are now: an answer for fewer keys is not one.
+    private var hasAnswer: Bool { !model.candidates.isEmpty && stage != "" }
 
     /// Keys that can wait in the queue: whatever ends up as text (letters, digits, punctuation, space).
     /// Others (arrows, delete, return, shortcuts) only the app can act on, after the queue.
@@ -189,6 +200,7 @@ final class InputController: IMKInputController {
     private func replay(_ client: IMKTextInput, force: Bool = false) {
         guard var rest = waiting else { return }
         waiting = nil
+        fullGivenUp = false
         comp?.event("wait", Int(Date().timeIntervalSince(waitStart) * 1000))
         waitTimer?.invalidate()
         waitTimer = nil
@@ -247,6 +259,7 @@ final class InputController: IMKInputController {
         comp?.context = ctx
         comp?.appText = context != nil
         comp?.sent[requestId] = (keys.count, Date())
+        stage = ""  // the candidates shown are for the keys before this one, until its answer comes (5A.4)
         if model.candidates.isEmpty { return }  // the panel appears with the first answer
         show(client, fade: false)
     }
@@ -257,6 +270,7 @@ final class InputController: IMKInputController {
     func engineAnswered(id: Int, stage: String, candidates: [String], segments: [(String, Int)] = []) {
         guard id == requestId, !keys.isEmpty, let client = currentClient else { return }
         comp?.answered(id: id, stage: stage)
+        answeredKeys = keys.count
         if stage == "more" {
             guard self.stage == "full" else { return }
             self.stage = stage
@@ -275,7 +289,7 @@ final class InputController: IMKInputController {
         segmentEnds = []
         model.selected = 0
         if waiting != nil && !candidates.isEmpty && (!waitForFull || stage != "quick") {
-            replay(client)
+            replay(client, force: fullGivenUp)
             if keys.isEmpty { return }
         }
         show(client, fade: fade)
@@ -298,9 +312,10 @@ final class InputController: IMKInputController {
     }
 
     /// Before a key that is not ours: the selection, but the best whole candidate if that is only the start.
+    /// Never one for fewer keys (a wait given up): the letters then, as with no answer.
     private func commitBest(_ client: IMKTextInput, how: String) {
         let i = segmentEnd(model.selected) == nil ? model.selected : 0
-        guard model.candidates.indices.contains(i) else { return commit(keys, client, how: "letters") }
+        guard hasAnswer, model.candidates.indices.contains(i) else { return commit(keys, client, how: "letters") }
         commit(model.candidates[i], client, how: how, picked: i)
     }
 
@@ -314,7 +329,7 @@ final class InputController: IMKInputController {
     /// Commits candidate `i`. One for the start of the keys commits only itself (4A.10): the rest of the keys stay
     /// marked and get candidates of their own, after the context plus what was just committed.
     private func commitSelected(_ i: Int, _ client: IMKTextInput, how: String) {
-        guard model.candidates.indices.contains(i) else { return commit(keys, client, how: "letters") }
+        guard hasAnswer, model.candidates.indices.contains(i) else { return commit(keys, client, how: "letters") }
         let text = model.candidates[i]
         guard let end = segmentEnd(i) else { return commit(text, client, how: how, picked: i) }
         insert(text, client)
@@ -328,6 +343,7 @@ final class InputController: IMKInputController {
         model = CandidateModel()
         segmentEnds = []
         stage = ""
+        answeredKeys = 0
         CandidatePanel.shared.hide()  // back with the first answer for the rest
         update(client)
     }
@@ -363,6 +379,7 @@ final class InputController: IMKInputController {
         segmentEnds = []
         requestId = 0
         stage = ""
+        answeredKeys = 0
         wantNextPage = false
         picked = false
         CandidatePanel.shared.hide()

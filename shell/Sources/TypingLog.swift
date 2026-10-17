@@ -97,6 +97,8 @@ struct Composition {
                                            // [ms, "wait", ms waited for an answer before committing (4A.8)]
     var answers: [[Any]] = []              // [keys count, "quick" / "full" / "more", ms from the key to the answer]
     var sent: [Int: (Int, Date)] = [:]     // request id -> (keys count, when sent)
+    var seen: (String?, String, Int)?      // at the first space: the first candidate on screen, its stage ("": for
+                                           // fewer keys, 5A.4) and how many keys it is for
 
     init(app: String?) { self.app = app }
 
@@ -122,6 +124,10 @@ struct Composition {
             "picked": picked ?? NSNull(), "page": model.page, "text": text ?? NSNull(), "ms": ms,
         ]
         if let used = used { r["used"] = used }
+        if let (first, stage, n) = seen {
+            let s: [String: Any] = ["first": first ?? NSNull(), "stage": stage, "keys": n]
+            r["seen"] = s
+        }
         return r
     }
 }
