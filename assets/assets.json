@@ -160,5 +160,21 @@
   "session": "LLM 输入法",
   "reviewed": "approved",
   "added": "2026-10-18"
+ },
+ "assets/demo/llm-ime-reel.mp4": {
+  "what": "19 s screen recording: initials typed in an editor (wjdzgxfh …) and the candidate window committing whole sentences",
+  "kind": "video",
+  "source": "copied from personal-site site/public/media/llm-ime-reel.mp4 (made in the session “个人网站”) for the public README (6C.1)",
+  "license": "the user's own",
+  "session": "公开仓库 0.6",
+  "added": "2026-10-19"
+ },
+ "assets/demo/llm-ime-demo.gif": {
+  "what": "the same recording as a GIF for the README (960 px, 15 fps, 64 colours)",
+  "kind": "video",
+  "source": "ffmpeg from assets/demo/llm-ime-reel.mp4 (fps=15, scale=960, palettegen max_colors=64), 6C.1",
+  "license": "the user's own",
+  "session": "公开仓库 0.6",
+  "added": "2026-10-19"
  }
 }
