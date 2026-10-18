@@ -1,0 +1,164 @@
+{
+ "assets/annotations/2026-10-13-imgAp3hL2Aj.png": {
+  "what": "IME candidate window mock in Notes with a red mark box on the window border",
+  "kind": "annotation",
+  "source": "pasted by the user into “LLM 输入法” on 2026-10-13",
+  "license": "the user's own",
+  "session": "LLM 输入法",
+  "note": "[Design review] rv_VWVrpoji “候选窗翻页:淡的 ‹ › 箭头”: 1 mark, 0 comments.\nThe numbers ①②③ are drawn on the images below. Answer each point in your reply; once the changes are agreed and made, send the new screenshots with request_review and previous: \"rv_VWVrpoji\".\n\nGroup 1 · 有好几页时的候选窗\n\nImage 1.1 · 浅色\n\n① 边",
+  "added": "2026-10-18"
+ },
+ "assets/annotations/2026-10-13-imgLv6yjcNV.png": {
+  "what": "Light candidate window with pinyin line, red mark box on the pinyin row",
+  "kind": "annotation",
+  "source": "pasted by the user into “LLM 输入法” on 2026-10-13",
+  "license": "the user's own",
+  "session": "LLM 输入法",
+  "note": "[Design review] rv_mKRBScBm “输入法候选窗：浅色 / 深色”: 1 mark, 1 comment.\nThe numbers ①②③ are drawn on the images below. Answer each point in your reply; once the changes are agreed and made, send the new screenshots with request_review and previous: \"rv_mKRBScBm\".\n\nGroup 1 · 候选窗（假数据）\nOverall: 还有现在是毛玻璃效果吗\n\nI",
+  "added": "2026-10-18"
+ },
+ "assets/annotations/2026-10-13-imgfbG_GvKh.png": {
+  "what": "IME candidate window in Notes with a red mark box on the first candidate edge gap",
+  "kind": "annotation",
+  "source": "pasted by the user into “LLM 输入法” on 2026-10-13",
+  "license": "the user's own",
+  "session": "LLM 输入法",
+  "note": "[Design review] rv_Gx1lEoMw “候选窗贴着选中项收紧”: 1 mark, 0 comments.\nThe numbers ①②③ are drawn on the images below. Answer each point in your reply; once the changes are agreed and made, send the new screenshots with request_review and previous: \"rv_Gx1lEoMw\".\n\nGroup 1 · 窗口边缘贴着选中项\n\nImage 1.1 · 浅色\n\n① 还是有缝能修",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗收紧之后/0.png": {
+  "what": "候选窗收紧之后 · 收紧后的候选窗 · 浅色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_11p9iEgC on 2026-10-13; made at /Users/iren/.agent-deck/review-fetch/revP8BjTF0S/0/candidates-light.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗收紧之后/1.png": {
+  "what": "候选窗收紧之后 · 收紧后的候选窗 · 深色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_11p9iEgC on 2026-10-13; made at /Users/iren/.agent-deck/review-fetch/revP8BjTF0S/1/candidates-dark.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗无缝-选中项占满高度/0.png": {
+  "what": "候选窗无缝：选中项占满高度 · 整个候选窗 · 浅色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_aXrZUmd4 on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-round6/candidates-light.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗无缝-选中项占满高度/1.png": {
+  "what": "候选窗无缝：选中项占满高度 · 整个候选窗 · 深色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_aXrZUmd4 on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-round6/candidates-dark.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗无缝-选中项占满高度/2.png": {
+  "what": "候选窗无缝：选中项占满高度 · 左角放大 · 浅色左角",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_aXrZUmd4 on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-round6/crop-light-left.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗无缝-选中项占满高度/3.png": {
+  "what": "候选窗无缝：选中项占满高度 · 左角放大 · 深色左角",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_aXrZUmd4 on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-round6/crop-dark-left.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗翻页-淡的-‹-›-箭头/0.png": {
+  "what": "候选窗翻页:淡的 ‹ › 箭头 · 有好几页时的候选窗 · 浅色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_VWVrpoji on 2026-10-13; made at /Users/iren/.agent-deck/review-fetch/revpL1CvGPq/0/candidates-light.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "answered (1 marks, in review.json)",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗翻页-淡的-‹-›-箭头/1.png": {
+  "what": "候选窗翻页:淡的 ‹ › 箭头 · 有好几页时的候选窗 · 深色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_VWVrpoji on 2026-10-13; made at /Users/iren/.agent-deck/review-fetch/revpL1CvGPq/1/candidates-dark.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "answered",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗贴着选中项收紧/0.png": {
+  "what": "候选窗贴着选中项收紧 · 窗口边缘贴着选中项 · 浅色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_Gx1lEoMw on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-round5/candidates-light.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "answered (1 marks, in review.json)",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-候选窗贴着选中项收紧/1.png": {
+  "what": "候选窗贴着选中项收紧 · 窗口边缘贴着选中项 · 深色",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_Gx1lEoMw on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-round5/candidates-dark.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "answered",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-输入法候选窗-浅色-深色/0.png": {
+  "what": "输入法候选窗：浅色 / 深色 · 候选窗（假数据） · 浅色（Warm 米白）",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_mKRBScBm on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2/candidates-light.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "answered: 还有现在是毛玻璃效果吗 (1 marks, in review.json)",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-输入法候选窗-浅色-深色/1.png": {
+  "what": "输入法候选窗：浅色 / 深色 · 候选窗（假数据） · 深色（Warm 暖黑）",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_mKRBScBm on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2/candidates-dark.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "answered: 还有现在是毛玻璃效果吗",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-输入法候选窗第二轮-浅色-深色-+-图标/0.png": {
+  "what": "输入法候选窗第二轮：浅色 / 深色 + 图标 · 候选窗（假数据，彩色背景） · 浅色（Warm 米白）",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_VkGTazNJ on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-r2/candidates-light.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-输入法候选窗第二轮-浅色-深色-+-图标/1.png": {
+  "what": "输入法候选窗第二轮：浅色 / 深色 + 图标 · 候选窗（假数据，彩色背景） · 深色（Warm 暖黑）",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_VkGTazNJ on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-r2/candidates-dark.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ },
+ "assets/reviews/2026-10-13-输入法候选窗第二轮-浅色-深色-+-图标/2.png": {
+  "what": "输入法候选窗第二轮：浅色 / 深色 + 图标 · 菜单栏图标 · 放大",
+  "kind": "review",
+  "source": "made in the session “LLM 输入法”; shown to the user in review rv_VkGTazNJ on 2026-10-13; made at /Users/iren/llm-ime-shots/4A.2-r2/menubar-icon.png",
+  "license": "own work",
+  "session": "LLM 输入法",
+  "reviewed": "approved",
+  "added": "2026-10-18"
+ }
+}

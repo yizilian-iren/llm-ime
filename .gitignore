@@ -7,3 +7,5 @@ models/
 .DS_Store
 logs/
 shell/build/
+# Copies of Deck's reviews (D-524): kept by the M4 → M3 mirror, not in git
+assets/reviews/
