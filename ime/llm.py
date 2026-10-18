@@ -34,7 +34,7 @@ class LLMEngine:
                  empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
                  split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
                  swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False, typo_penalty=0.0,
-                 typo_rows=3):
+                 typo_rows=3, english_penalty=0.0, english_pinyin_penalty=0.0):
         self.model, self.tok = load(model)
         self.model_path = model  # for the service's log: the base or the weekly retrain's (6A.2)
         self.mix = _Cached(load(mix)[0]) if mix else None
@@ -73,7 +73,12 @@ class LLMEngine:
         self.char_logp = char_logp() if self.single_weight else {}
         # english: keys that are an English word (ime/en_words.txt: github, cpu, tracker) and not pinyin, not even
         # pinyin typed halfway (long, fan, and bus on the way to bushi, stay Chinese) get the word as typed first
-        self.english = _english_words() if english else frozenset()
+        self.english = _english_words() if english or english_penalty else frozenset()
+        # english_penalty: nats for reading keys inside the sentence as an English word typed as it is (woyongpythonxie:
+        # 我用python写, 6B.1), its tokens scored by the model like any other; 0 turns it off. english_pinyin_penalty: more
+        # for a word whose letters are whole pinyin syllables too (change: 嫦娥, long: 龙).
+        self.english_penalty, self.english_pinyin_penalty = float(english_penalty), float(english_pinyin_penalty)
+        self._en_tokens = {}  # word -> ((token id, key end offset), ...)
         self.pinyin = {s for s in self.syllables if any(v in s for v in "aeiouv")}  # not n, m, hm of 嗯 呣
         self.pinyin_starts = {s[:i] for s in self.pinyin for i in range(1, len(s) + 1)}
         # typo_penalty: nats for reading a typed syllable with one key too many, one missing, or one hit next to the
@@ -206,6 +211,42 @@ class LLMEngine:
         fixes_[:] = [f for _, f in out.values()]
         return ends, tids, abs_, fixes_
 
+    def english_edges(self, keys, p):
+        """English words starting at key position p, typed as they are (english_penalty): (ends, token ids, costs, fixes,
+        rests) like edges, the token being the word's first; rests: the word's other tokens [(token id, key end)], fed
+        one a step before the hypothesis reads on."""
+        out = []
+        if self.english_penalty:
+            for L in range(2, min(20, len(keys) - p) + 1):
+                w = keys[p : p + L]
+                if w not in self.english:
+                    continue
+                toks = self._en_tokens.get(w)
+                if toks is None:
+                    ids, toks, at = self.tok.encode(w), [], 0
+                    for t in ids:
+                        piece = self.tok.decode([t])
+                        at += len(piece)
+                        toks.append((t, at))
+                        self.tok_text.setdefault(t, piece)
+                    toks = self._en_tokens[w] = tuple(toks) if at == len(w) else ()
+                if toks:
+                    cost = self.english_penalty + (self.english_pinyin_penalty if self._whole_pinyin(w) else 0.0)
+                    out.append((p + toks[0][1], toks[0][0], cost, tuple((t, p + e) for t, e in toks[1:])))
+        ends = np.array([o[0] for o in out], dtype=np.int32)
+        tids = np.array([o[1] for o in out], dtype=np.int32)
+        costs = np.array([o[2] for o in out], dtype=np.float32)
+        fixes_, rests = np.empty(len(out), dtype=object), np.empty(len(out), dtype=object)
+        fixes_[:] = [()] * len(out)
+        rests[:] = [o[3] for o in out]
+        return ends, tids, costs, fixes_, rests
+
+    def _whole_pinyin(self, w):
+        ok = [True] + [False] * len(w)
+        for i in range(1, len(w) + 1):
+            ok[i] = any(ok[i - L] and w[i - L : i] in self.pinyin for L in range(1, min(6, i) + 1))
+        return ok[len(w)]
+
     def feasible(self, keys, swaps=True):  # alts need nothing here: en etc. are readings of other characters
         """feasible[p]: keys[p:] can be split into reading prefixes, or (with swap_penalty) whole syllables
         with two adjacent keys exchanged, or (typo_penalty) typed with one key off (else a hypothesis at p is a dead end)."""
@@ -227,6 +268,9 @@ class LLMEngine:
                             jumps[s].append(e)
                         else:  # the swap straddles into the next syllable, which must be whole too
                             jumps[s] += [e2 for e2 in range(e + 1, min(e + 6, n) + 1) if ks[e:e2] in self.syllables]
+        if self.english_penalty:
+            for s in range(n):
+                jumps[s] += [s + L for L in range(2, min(20, n - s) + 1) if keys[s : s + L] in self.english]
         ok = [False] * n + [True]
         for p in range(n - 1, -1, -1):
             ok[p] = any(ok[p + L] for L in range(1, min(6, n - p) + 1) if keys[p : p + L] in self.prefixes) or any(
@@ -410,16 +454,26 @@ class LLMEngine:
         def edges_at(p):
             if p not in edge_cache:
                 e = self.edges(keys, p, swaps=fixes, alts=alts)
-                ok = np.array([feasible[x] for x in e[0]], dtype=bool)
+                rests = np.empty(len(e[0]), dtype=object)
+                rests[:] = [()] * len(e[0])
+                e = (*e, rests)
+                if self.english_penalty:
+                    e = tuple(np.concatenate([a, b]) for a, b in zip(e, self.english_edges(keys, p)))
+                last = np.array([r[-1][1] if r else x for x, r in zip(e[0], e[4])], dtype=np.int32)
+                ok = np.array([feasible[x] for x in last], dtype=bool)
                 edge_cache[p] = tuple(x[ok] for x in e) if len(e[0]) else e
             return edge_cache[p]
 
         logits = self._ctx_logits
         mix_logits = self.mix.ctx_logits if mix else None
         mix_w = (self.mix_weight if context.strip() else self.mix_weight_empty) if mix else 0
-        active = [(0.0, "", 0, (), ())]  # (score, text, key position, path, fixes)
+        active = [(0.0, "", 0, (), (), ())]  # (score, text, key position, path, fixes, rest of an English word)
         cache = mix_cache = None
         mix_rows = [0] if mix_w else []  # the rows of active that mix_logits has, in its order
+        if prefix:  # not into an English word: it may be cut short there (pyth of python)
+            prefix = list(prefix)
+            while prefix and prefix[-1][0] in self.tok_text and self.tok_text[prefix[-1][0]].isascii():
+                prefix.pop()
         if prefix and prefix[-1][1] <= n and feasible[prefix[-1][1]]:
             path = tuple(prefix)
             cache = self._fork_cache(mx.array([0]), len(path) + n + 2)
@@ -428,15 +482,16 @@ class LLMEngine:
             if mix_w:
                 mix_cache = self.mix.fork(mx.array([0]), len(path) + n + 2)
                 mix_logits = self.mix.model(ptoks, cache=mix_cache)[:, -1, :]
-            active = [(0.0, "".join(self.tok_text[t] for t, _e in path), path[-1][1], path, ())]
+            active = [(0.0, "".join(self.tok_text[t] for t, _e in path), path[-1][1], path, (), ())]
         finished = []
         for _step in range(n + 1):
             if stop and stop():
                 return None
             # Only the columns this step can use (the tokens that fit at the beams' key positions, and EOS)
             # leave the GPU: copying the whole vocab per beam cost more than the forward.
-            pos = {h[2] for h in active if h[2] < n}
-            cols = np.unique(np.concatenate([edges_at(p)[1] for p in pos] + [np.array([self.eos], np.int32)]))
+            pos = {h[2] for h in active if h[2] < n and not h[5]}
+            more = [np.array([h[5][0][0] for h in active if h[5]], np.int32)]
+            cols = np.unique(np.concatenate([edges_at(p)[1] for p in pos] + more + [np.array([self.eos], np.int32)]))
             col_of = lambda t: np.searchsorted(cols, t)  # noqa: E731
             lp = _log_softmax_cols(logits, mx.array(cols))
             if mix_w and mix_rows:
@@ -448,12 +503,17 @@ class LLMEngine:
                 lp[:, col_of(self.eos)] = eos_lp
             else:
                 lp = np.array(lp)
-            cand_s, cand_parent, cand_tid, cand_end, cand_sw = [], [], [], [], []
-            for b, (score, text, p, path, fix) in enumerate(active):
-                if p == n:  # all keys consumed, waiting for its end-of-sentence score
+            cand_s, cand_parent, cand_tid, cand_end, cand_sw, cand_rest = [], [], [], [], [], []
+            for b, (score, text, p, path, fix, rest) in enumerate(active):
+                if rest:  # inside an English word: its next token only
+                    ends, tids, abs_ = (np.array([x], np.int32) for x in (rest[0][1], rest[0][0], 0))
+                    fixes_, rests = np.empty(1, dtype=object), np.empty(1, dtype=object)
+                    fixes_[0], rests[0] = (), rest[1:]
+                elif p == n:  # all keys consumed, waiting for its end-of-sentence score
                     finished.append((score + float(lp[b, col_of(self.eos)]), text, path, fix))
                     continue
-                ends, tids, abs_, fixes_ = edges_at(p)
+                else:
+                    ends, tids, abs_, fixes_, rests = edges_at(p)
                 if len(tids) == 0:
                     continue
                 cand_s.append(score + lp[b, col_of(tids)] - abs_)
@@ -461,9 +521,10 @@ class LLMEngine:
                 cand_tid.append(tids)
                 cand_end.append(ends)
                 cand_sw.append(fixes_)
+                cand_rest.append(rests)
             if not cand_s:
                 break
-            S, P, T, E, W = (np.concatenate(x) for x in (cand_s, cand_parent, cand_tid, cand_end, cand_sw))
+            S, P, T, E, W, R = (np.concatenate(x) for x in (cand_s, cand_parent, cand_tid, cand_end, cand_sw, cand_rest))
             order = np.argsort(-(S + self.beta * E))
 
             def grown(j):  # (score, text, path, fixes) of candidate j; only built for the ones kept
@@ -474,7 +535,7 @@ class LLMEngine:
             nxt, parents, tids = [], [], []
             typo_rows = 0
             for i, j in enumerate(order):
-                if E[j] == n and finish_now:
+                if E[j] == n and finish_now and not R[j]:
                     finished.append(grown(j))
                 elif len(nxt) - typo_rows < beam:
                     s, text, path, fix = grown(j)
@@ -483,13 +544,13 @@ class LLMEngine:
                         if typo_rows >= self.typo_rows:
                             continue
                         typo_rows += 1
-                    nxt.append((s, text, int(E[j]), path, fix))
+                    nxt.append((s, text, int(E[j]), path, fix, R[j]))
                     parents.append(int(P[j]))
                     tids.append(int(T[j]))
                 if len(nxt) - typo_rows >= beam:  # the beam is full: only finished ones still count, up to k * 3 of them
                     if finish_now and len(finished) < k * 3:
                         rest = order[i + 1 :]
-                        finished += [grown(j) for j in rest[E[rest] == n][: k * 3 - len(finished)]]
+                        finished += [grown(j) for j in rest[E[rest] == n] if not R[j]][: k * 3 - len(finished)]
                     break
             finished.sort(key=lambda f: f[:3], reverse=True)
             if not nxt or (len(finished) >= k and finished[k - 1][0] >= max(h[0] for h in nxt)):
@@ -500,7 +561,7 @@ class LLMEngine:
                 # no forward for it (5B.6: about an eighth of the rows). Not one with a fix, which may still be
                 # searched again (convert).
                 floor = next(f[0] for f in finished if f[1] == texts[k - 1])
-                keep = [i for i, h in enumerate(nxt) if h[2] < n or h[4] or h[0] > floor]
+                keep = [i for i, h in enumerate(nxt) if h[2] < n or h[4] or h[5] or h[0] > floor]
                 if len(keep) < len(nxt):
                     nxt, parents, tids = [nxt[i] for i in keep], [parents[i] for i in keep], [tids[i] for i in keep]
             idx = mx.array(parents)
@@ -512,7 +573,7 @@ class LLMEngine:
             logits = self.model(mx.array(tids)[:, None], cache=cache)[:, -1, :]
             # the mixed-in model only for the beams with keys left: the others wait for the end-of-sentence score,
             # which is the first model's alone
-            rows = [i for i, h in enumerate(nxt) if h[2] < n] if mix_w else []
+            rows = [i for i, h in enumerate(nxt) if h[2] < n or h[5]] if mix_w else []
             if rows:
                 at = {a: i for i, a in enumerate(mix_rows)}
                 midx = mx.array([at[parents[i]] for i in rows])
