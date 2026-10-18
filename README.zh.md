@@ -111,6 +111,8 @@ shell/build.sh
 
 ## 用到的数据和许可
 
+本仓库的代码采用 [MIT License](LICENSE)。用到的模型和数据各按自己的许可。
+
 - [Qwen3-0.6B-Base](https://huggingface.co/Qwen/Qwen3-0.6B-Base)（Apache-2.0）
 - [LCCC](https://github.com/thu-coai/CDial-GPT)、中文 Wikipedia（训练和字频 `ime/char_freq.tsv`）
 - [OpenCC](https://github.com/BYVoid/OpenCC) 的字表（Apache-2.0，`ime/trad_chars.txt`）

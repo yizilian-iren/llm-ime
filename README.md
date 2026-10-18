@@ -112,6 +112,8 @@ shell/build.sh
 
 ## 使っているデータとライセンス
 
+このリポジトリのコードは [MIT License](LICENSE) です。使っているモデルとデータは、それぞれのライセンスに従います。
+
 - [Qwen3-0.6B-Base](https://huggingface.co/Qwen/Qwen3-0.6B-Base)（Apache-2.0）
 - [LCCC](https://github.com/thu-coai/CDial-GPT)、中国語 Wikipedia（学習と字の頻度 `ime/char_freq.tsv`）
 - [OpenCC](https://github.com/BYVoid/OpenCC) の字表（Apache-2.0、`ime/trad_chars.txt`）
