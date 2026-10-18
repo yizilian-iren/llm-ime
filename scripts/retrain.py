@@ -162,7 +162,7 @@ def fetch(run, work):
     else:
         last = datetime.date.fromisoformat(order[-1])
         test = [d for d in order if datetime.date.fromisoformat(d) > last - datetime.timedelta(days=7)]
-    run.update(days=len(order), test_days=test, train_n=sum(days[d] for d in order if d not in test),
+    run.update(days=len(order), days_list=order, test_days=test, train_n=sum(days[d] for d in order if d not in test),
                test_n=sum(days[d] for d in test), log_counts=counts)
     log(f"fetched: base {run['base']}, {len(order)} days, train {run['train_n']}, test {run['test_n']} ({test})")
     if run["train_n"] < MIN_TRAIN:
@@ -281,6 +281,9 @@ def deploy(run, work):
     q = quiet_s()
     if q < QUIET_S:
         raise Wait(f"the user typed {q} s ago")
+    first = min(d for d in run["days_list"] if d not in run["test_days"])
+    if ssh(M3, f'[ -f "{M3_BASE}/log/{first}.jsonl" ] && echo yes || echo no').strip() != "yes":
+        raise Skip("the records it was trained on were deleted (删除全部记录): not deployed")
     name = f"personal-{run['day'].replace('-', '')}-4bit"
     sh(["rsync", "-a", "--delete", os.path.join(work, "new-4bit") + "/", f"{M3}:Projects/llm-ime/models/{name}/"])
     engine_log = "$HOME/Library/Logs/llm-ime/engine.log"

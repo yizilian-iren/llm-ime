@@ -38,6 +38,20 @@ def personal_or(base: str) -> str:
     return base
 
 
+def forget_personal() -> bool:
+    """Deletes the personal models (the menu's 删除全部记录: they were learned from the records); True if there was
+    one to use."""
+    import glob
+    import shutil
+
+    had = os.path.exists(os.path.join(PERSONAL, "base"))
+    if os.path.islink(PERSONAL) or os.path.exists(PERSONAL):
+        os.remove(PERSONAL) if os.path.islink(PERSONAL) else shutil.rmtree(PERSONAL)
+    for d in glob.glob(os.path.join(os.path.dirname(PERSONAL), "personal-2*-4bit")):
+        shutil.rmtree(d)
+    return had
+
+
 def load(name: str, **kw) -> Engine:
     if name == "ngram":
         from ime.ngram import NgramEngine

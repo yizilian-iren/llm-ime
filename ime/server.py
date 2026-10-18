@@ -12,6 +12,7 @@ One JSON object per line, both ways:
   -> {"op": "commit", "text": "今天"}                            what was committed; kept in memory as context
   -> {"op": "learn", "keys": "liji", "text": "力积", "first": "理解"}   a pick to learn from (5A.3, ime.userwords)
   -> {"op": "forget"}                                           clears the word list (the menu's 删除全部记录)
+                                                                 and deletes the personal model (6A.2)
   -> {"op": "import", "path": "/x/words.tsv", "count": 1, "id": 9}   adds `keys<TAB>word[<TAB>count]` lines
                                                                  <- {"id": 9, "imported": n}
   -> {"op": "ping", "id": 8}   <- {"id": 8, "op": "pong"}
@@ -73,6 +74,7 @@ class Server:
     def __init__(self, engine, k=5, more=None, words=None):
         self.committed = ""  # recent committed text, in memory only
         self.words = words
+        self.personal = getattr(engine, "model_path", "") == engines.PERSONAL
         self.session = Session(engine, self._on_result, k=k, more=more, segments=True, words=words,
                                on_error=lambda: log_error("conversion"))
 
@@ -98,8 +100,12 @@ class Server:
             self.committed = (self.committed + msg.get("text", ""))[-CONTEXT_CHARS:]
         elif op == "learn" and self.words:
             self.words.learn(msg.get("keys", ""), msg.get("text", ""), msg.get("first", ""))
-        elif op == "forget" and self.words:
-            self.words.forget()
+        elif op == "forget":
+            if self.words:
+                self.words.forget()
+            if engines.forget_personal() and self.personal:  # 6A.2: back to the base, which needs a new process
+                log("personal model deleted: restarting on the base")
+                threading.Timer(0.5, os._exit, (0,)).start()  # launchd starts it again (KeepAlive)
         elif op == "import" and self.words:
             conn.send({"id": msg.get("id"), "imported": self.words.import_file(msg["path"], int(msg.get("count", 1)))})
         elif op == "ping":
