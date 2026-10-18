@@ -12,6 +12,11 @@ renormalised. The mix model's input is rebuilt from the sample: its context toke
   .venv-train/bin/python scripts/train.py --model runs/r2/final --teacher runs/r2/final \
       --mix models/Qwen3-0.6B-Base --distill 1.0 --out runs/r4 --ckpt
   r4a2: --model runs/r4/final --ce 0.2 --lr 3e-5 (the plain loss at full weight pulled r4 back towards r2)
+
+LoRA (--lora R, 6A.1: home4070's 4070 has ~5-6 GB left beside voice-tts): the model frozen in bf16, adapters of rank
+R on every linear layer of the blocks; saves the adapter (final) and the model with it merged in (final-merged, for
+the MLX conversion). Each log line has the peak GPU memory PyTorch allocated (mem_gb).
+  .venv-train/bin/python scripts/train.py --model models/r2-hf --lora 16 --ckpt --tokens 8192 --lr 2e-4 --out runs/l1
 """
 
 import argparse
@@ -25,6 +30,8 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from transformers import AutoModelForCausalLM
+
+CE_CHUNK = 2048  # target positions per lm_head call: 2048 x 151k fp32 logits are 1.2 GB (--ce-chunk)
 
 
 def load(path):
@@ -120,15 +127,17 @@ def _mix_batch(ids, off, plen, cstart, cend, g, pad_id, nl_id, w_ctx, w_empty):
 def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos_id=None, ce=1.0):
     # Only target positions go through lm_head: full-vocab logits for every token would be tens of GB.
     # Chunked so the (targets x 151k vocab) logits never exist all at once.
-    hs = model.model(input_ids=x, attention_mask=att).last_hidden_state
+    # use_cache=False: else every layer keeps its keys and values, 1.9 GB at 16k tokens (6A.1)
+    hs = model.model(input_ids=x, attention_mask=att, use_cache=False).last_hidden_state
     h = hs[:, :-1]
     tgt = y[:, 1:]
     mask = tgt != -100
     h, tgt, w = h[mask], tgt[mask], w[:, 1:][mask]
     total = 0.0
-    for i in range(0, len(tgt), 2048):
-        total = total + torch.utils.checkpoint.checkpoint(_ce_chunk, model.lm_head, h[i : i + 2048], tgt[i : i + 2048],
-                                                          w[i : i + 2048], use_reentrant=False)
+    for i in range(0, len(tgt), CE_CHUNK):
+        j = i + CE_CHUNK
+        total = total + torch.utils.checkpoint.checkpoint(_ce_chunk, model.lm_head, h[i:j], tgt[i:j], w[i:j],
+                                                          use_reentrant=False)
     loss = total / w.sum()
     if not distill:
         return loss, None
@@ -137,8 +146,8 @@ def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos
     teacher, mix = teachers
     hs_t = hs[:, : tmask.shape[1]][tmask]  # student, at the positions predicting target tokens
     with torch.no_grad():
-        ht = teacher.model(input_ids=x, attention_mask=att).last_hidden_state[:, : tmask.shape[1]][tmask]
-        hb = mix.model(input_ids=xb, attention_mask=attb).last_hidden_state[bmask]
+        ht = teacher.model(input_ids=x, attention_mask=att, use_cache=False).last_hidden_state[:, : tmask.shape[1]][tmask]
+        hb = mix.model(input_ids=xb, attention_mask=attb, use_cache=False).last_hidden_state[bmask]
     kl = 0.0
     for i in range(0, len(hs_t), 512):
         with torch.no_grad():
@@ -184,6 +193,7 @@ def write_progress(out, done, total, eta_s, note, status="running"):
 
 
 def main():
+    global CE_CHUNK
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="models/Qwen3-0.6B-Base")
     ap.add_argument("--out", required=True)
@@ -205,17 +215,35 @@ def main():
     ap.add_argument("--key-weight", type=float, default=0.0,
                     help="interleave data: loss weight on the letters, so the model scores keys too (r4b2: 1.0)")
     ap.add_argument("--ce", type=float, default=1.0, help="weight of the plain loss when distilling (r4a2: 0.2)")
+    ap.add_argument("--lora", type=int, default=0, help="LoRA rank (0: full fine-tune)")
+    ap.add_argument("--lora-alpha", type=float, default=0, help="default 2 x rank")
+    ap.add_argument("--lora-targets", default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")
+    ap.add_argument("--ce-chunk", type=int, default=CE_CHUNK, help="smaller: less memory for the logits (6A.1: 256)")
     a = ap.parse_args()
+    CE_CHUNK = a.ce_chunk
     os.makedirs(a.out, exist_ok=True)
     dev = "cuda"
     torch.backends.cuda.matmul.allow_tf32 = True
     # dgx is shared and its memory is unified with the CPU: fail with OOM rather than freeze the machine.
     torch.cuda.set_per_process_memory_fraction(a.mem_frac)
 
-    model = AutoModelForCausalLM.from_pretrained(a.model, dtype=torch.float32, attn_implementation="sdpa").to(dev)
+    dtype = torch.bfloat16 if a.lora else torch.float32  # frozen weights need no fp32 master copy
+    model = AutoModelForCausalLM.from_pretrained(a.model, dtype=dtype, attn_implementation="sdpa").to(dev)
     model.train()
-    if a.ckpt:
-        model.gradient_checkpointing_enable()
+    if a.ckpt:  # non-reentrant: with LoRA the inputs of a checkpointed block need no grad of their own
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    peft = None
+    if a.lora:
+        from peft import LoraConfig, get_peft_model
+
+        peft = get_peft_model(model, LoraConfig(r=a.lora, lora_alpha=a.lora_alpha or 2 * a.lora, lora_dropout=0.0,
+                                                target_modules=a.lora_targets.split(",")))
+        for p in model.parameters():  # adapters in fp32 under autocast
+            if p.requires_grad:
+                p.data = p.data.float()
+        model = peft.get_base_model()  # the same modules, adapters injected: loss_fn uses model.model / lm_head
+        peft.print_trainable_parameters()
+    params = [p for p in model.parameters() if p.requires_grad]
     pad_id = model.config.eos_token_id
     teachers, mix_input, distill = None, None, 0.0
     if a.teacher:
@@ -234,7 +262,7 @@ def main():
     steps = a.max_steps or int(a.epochs * n_tok / (a.tokens * 0.8))
     print(f"{len(train[2])} samples, {n_tok / 1e6:.0f}M tokens, ~{steps} steps", flush=True)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=a.lr, betas=(0.9, 0.95), weight_decay=0.01, fused=True)
+    opt = torch.optim.AdamW(params, lr=a.lr, betas=(0.9, 0.95), weight_decay=0.01, fused=True)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1, (s + 1) / a.warmup) * 0.5 * (1 + math.cos(math.pi * min(1, s / steps))))
     log = open(os.path.join(a.out, "log.jsonl"), "a")
@@ -248,7 +276,7 @@ def main():
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 loss, kl = loss_fn(model, x, y, att, w, mb, teachers, distill, pad_id, a.ce)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
             sched.step()
             opt.zero_grad(set_to_none=True)
@@ -258,6 +286,7 @@ def main():
                 rate = seen / (time.time() - t0)
                 rec = {"step": step, "loss": float(loss), **({"kl": round(float(kl), 4)} if kl is not None else {}),
                        "lr": sched.get_last_lr()[0], "tok_s": round(rate),
+                       "mem_gb": round(torch.cuda.max_memory_allocated() / 2**30, 2),
                        "eta_h": round((steps - step) * a.tokens * 0.8 / rate / 3600, 2)}
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
@@ -268,10 +297,15 @@ def main():
                 log.write(json.dumps({"step": step, "valid": v}) + "\n")
                 log.flush()
                 print(f"step {step} valid {v:.4f}", flush=True)
-                model.save_pretrained(os.path.join(a.out, "ckpt"), safe_serialization=True)
+                (peft or model).save_pretrained(os.path.join(a.out, "ckpt"), safe_serialization=True)
             if step >= steps:
                 break
-    model.to(torch.bfloat16).save_pretrained(os.path.join(a.out, "final"), safe_serialization=True)
+    if peft:
+        peft.save_pretrained(os.path.join(a.out, "final"), safe_serialization=True)
+        peft.merge_and_unload().to(torch.bfloat16).save_pretrained(os.path.join(a.out, "final-merged"),
+                                                                   safe_serialization=True)
+    else:
+        model.to(torch.bfloat16).save_pretrained(os.path.join(a.out, "final"), safe_serialization=True)
     write_progress(a.out, step, steps, 0, "saved final", "done")
     print("done", flush=True)
 
