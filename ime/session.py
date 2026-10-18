@@ -147,7 +147,8 @@ class Session:
         cands = []
         whole = getattr(self.engine, "whole_pinyin", None)
         if whole and whole(keys):
-            chinese = self.engine.convert("", keys, k=8, stop=lambda: self._newer(tag))  # English before it: no help
+            # English before it is no help; the first three only (xuexi: 学习, not 血洗's reeking of blood)
+            chinese = self.engine.convert("", keys, k=3, stop=lambda: self._newer(tag))
             if chinese is None:
                 return
             cands = zh_en.english(chinese)
