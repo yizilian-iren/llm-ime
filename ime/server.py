@@ -166,7 +166,7 @@ def main():
     t = time.time()
     eng = engines.load(a.engine)
     eng.convert("", "nihao", k=1)  # first call compiles; do it before the shell waits on it
-    log(f"loaded {a.engine} in {time.time() - t:.1f}s")
+    log(f"loaded {a.engine} ({getattr(eng, 'model_path', '?')}) in {time.time() - t:.1f}s")
     words = userwords.UserWords(eng, a.words) if a.words and hasattr(eng, "score") else None
     server = Server(eng, k=a.k, more=a.more, words=words)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # launchd stops it with SIGTERM: remove the socket

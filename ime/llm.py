@@ -36,6 +36,7 @@ class LLMEngine:
                  swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False, typo_penalty=0.0,
                  typo_rows=3):
         self.model, self.tok = load(model)
+        self.model_path = model  # for the service's log: the base or the weekly retrain's (6A.2)
         self.mix = _Cached(load(mix)[0]) if mix else None
         # With no context the mixed-in model is only guessing: it gets its own (usually smaller) weight.
         self.mix_weight = mix_weight

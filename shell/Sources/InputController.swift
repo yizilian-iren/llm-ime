@@ -517,12 +517,19 @@ final class InputController: IMKInputController {
         let pause = NSMenuItem(title: "暂停记录", action: #selector(togglePause(_:)), keyEquivalent: "")
         pause.state = TypingLog.shared.paused ? .on : .off
         menu.addItem(pause)
+        // 6A.2: scripts/retrain.py on M4 reads it over ssh (defaults read com.iren.inputmethod.LLMIME retrainPaused)
+        let retrain = NSMenuItem(title: "暂停每周重训", action: #selector(toggleRetrain(_:)), keyEquivalent: "")
+        retrain.state = UserDefaults.standard.bool(forKey: "retrainPaused") ? .on : .off
+        menu.addItem(retrain)
         menu.addItem(NSMenuItem(title: "打开记录文件夹", action: #selector(openLog(_:)), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "删除全部记录", action: #selector(deleteLog(_:)), keyEquivalent: ""))
         return menu
     }
 
     @objc func togglePause(_ sender: Any?) { TypingLog.shared.paused.toggle() }
+    @objc func toggleRetrain(_ sender: Any?) {
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "retrainPaused"), forKey: "retrainPaused")
+    }
     @objc func openLog(_ sender: Any?) { TypingLog.shared.openFolder() }
     @objc func deleteLog(_ sender: Any?) {
         logged = nil  // the last commit's record too

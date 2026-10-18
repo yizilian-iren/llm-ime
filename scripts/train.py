@@ -45,6 +45,19 @@ def load(path):
     return d["ids"], d["offsets"], d["plen"], cs, ce, keyids
 
 
+def take(data, idx):
+    """Rows idx of loaded data, as loaded data."""
+    ids, off, plen, cs, ce, keyids = data
+    parts = [ids[off[i] : off[i + 1]] for i in idx]
+    offsets = np.concatenate([[0], np.cumsum([len(q) for q in parts])]).astype(off.dtype)
+    return np.concatenate(parts), offsets, plen[idx], cs[idx], ce[idx], keyids
+
+
+def concat(a, b):
+    return (np.concatenate([a[0], b[0]]), np.concatenate([a[1], b[1][1:] + a[1][-1]]),
+            *(np.concatenate([x, y]) for x, y in zip(a[2:5], b[2:5])), a[5])
+
+
 def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None, key_weight=0.0):
     """mix_input: (newline token id, w with context, w without) to also build the mix model's input.
     key_weight: interleave data's letters in the target span get this weight (0 = no loss on them)."""
@@ -218,6 +231,9 @@ def main():
     ap.add_argument("--lora", type=int, default=0, help="LoRA rank (0: full fine-tune)")
     ap.add_argument("--lora-alpha", type=float, default=0, help="default 2 x rank")
     ap.add_argument("--lora-targets", default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")
+    ap.add_argument("--replay", default="", help="also train on rows of this npz (public data, so the weekly LoRA on "
+                    "the user's commits does not forget the rest, 6A.2)")
+    ap.add_argument("--replay-ratio", type=float, default=1.0, help="replayed rows per row of --data")
     ap.add_argument("--ce-chunk", type=int, default=CE_CHUNK, help="smaller: less memory for the logits (6A.1: 256)")
     a = ap.parse_args()
     CE_CHUNK = a.ce_chunk
@@ -257,6 +273,12 @@ def main():
         assert len(nl) == 1, nl
         mix_input, distill = (nl[0], a.mix_weight, a.mix_weight_empty), a.distill
     train, valid = load(f"{a.data}/train.npz"), load(f"{a.data}/valid.npz")
+    if a.replay:
+        public = load(a.replay)
+        n = min(len(public[2]), int(a.replay_ratio * len(train[2])))
+        idx = np.sort(np.random.default_rng(2).choice(len(public[2]), n, replace=False))
+        print(f"{len(train[2])} samples of --data, {n} replayed from {a.replay}", flush=True)
+        train = concat(train, take(public, idx))
     assert not (a.teacher and train[5] is not None), "distillation is not written for interleave data"
     n_tok = int(train[1][-1])
     steps = a.max_steps or int(a.epochs * n_tok / (a.tokens * 0.8))
