@@ -2,6 +2,8 @@
 
 # LLM IME
 
+作者：iren（[iren.page](https://iren.page)：ほかの作品もこちら）
+
 中国語ピンインを**略して打てる** macOS の IME です。各音節の頭文字だけを打てば（`wjdzgxfh` → 我觉得这个想法很好）、ファインチューニングした小さな言語モデルが、カーソルの左にある文脈から文全体を当てます。モデルは Mac の中で動き（MLX、4-bit）、変換のために打った内容をクラウドへ送ることはありません。
 
 ![demo](assets/demo/llm-ime-demo.gif)

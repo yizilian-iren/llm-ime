@@ -2,6 +2,8 @@
 
 # LLM IME
 
+作者：iren（[iren.page](https://iren.page)：其他作品也在这里）
+
 一个能**简拼整句**的 macOS 中文输入法：每个字只打声母（`wjdzgxfh` → 我觉得这个想法很好），微调过的小语言模型按光标左边的前文猜出整句。模型在 Mac 本机上跑（MLX，4-bit），转换不把打的字发到云端。
 
 ![demo](assets/demo/llm-ime-demo.gif)
