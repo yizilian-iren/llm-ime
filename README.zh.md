@@ -20,21 +20,21 @@
 
 ```mermaid
 flowchart LR
-  subgraph Mac["Mac（全在本机）"]
+  subgraph Mac["Mac（转换全在本机）"]
     App["应用<br/>（编辑器等）"]
     Shell["输入法本体<br/>Swift + InputMethodKit<br/>shell/"]
     Engine["引擎服务<br/>Python, launchd<br/>ime/server.py"]
     Model["转换模型<br/>微调的 Qwen3-0.6B<br/>MLX 4-bit"]
     Words["词表<br/>words.json"]
-    Log["打字记录<br/>（只在这台 Mac）"]
+    Log["打字记录"]
     App <--> Shell
-    Shell <-- "Unix socket<br/>一行一个 JSON" --> Engine
+    Shell <-->|"Unix socket<br/>一行一个 JSON"| Engine
     Engine --> Model
     Engine <--> Words
     Shell --> Log
   end
-  Log -. "每周一次：只取上屏的候选" .-> Retrain["重训<br/>家里的 GPU 上训 LoRA"]
-  Retrain -. "评测变好才换" .-> Model
+  Log -.->|"每周一次：只取上屏的候选<br/>（只在用户自己的机器之间）"| Retrain["重训<br/>家里的 GPU 上训 LoRA"]
+  Retrain -.->|"评测变好才换"| Model
 ```
 
 - **输入法本体（`shell/`）**：用 InputMethodKit 写的 Swift 程序，管候选窗、翻页、上屏和打字记录。不用 Xcode，只用 Command Line Tools 的 `swiftc` 构建（`shell/build.sh`）。

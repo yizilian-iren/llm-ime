@@ -20,21 +20,21 @@
 
 ```mermaid
 flowchart LR
-  subgraph Mac["Mac（すべてローカル）"]
+  subgraph Mac["Mac（変換はすべてこの中）"]
     App["アプリ<br/>（エディタなど）"]
     Shell["IME 本体<br/>Swift + InputMethodKit<br/>shell/"]
     Engine["エンジンサービス<br/>Python, launchd<br/>ime/server.py"]
     Model["変換モデル<br/>Qwen3-0.6B ファインチューニング<br/>MLX 4-bit"]
     Words["単語リスト<br/>words.json"]
-    Log["打鍵ログ<br/>（この Mac だけ）"]
+    Log["打鍵ログ"]
     App <--> Shell
-    Shell <-- "Unix socket<br/>1 行 1 JSON" --> Engine
+    Shell <-->|"Unix socket<br/>1 行 1 JSON"| Engine
     Engine --> Model
     Engine <--> Words
     Shell --> Log
   end
-  Log -. "週 1 回：確定した候補だけ" .-> Retrain["再学習<br/>自宅の GPU で LoRA"]
-  Retrain -. "評価で良くなったときだけ" .-> Model
+  Log -.->|"週 1 回：確定した候補だけ<br/>（本人の機器の間だけ）"| Retrain["再学習<br/>自宅の GPU で LoRA"]
+  Retrain -.->|"評価で良くなったときだけ"| Model
 ```
 
 - **IME 本体（`shell/`）**：InputMethodKit で書いた Swift のアプリ。候補ウィンドウ、ページ送り、確定、打鍵ログを受け持ちます。Xcode なしで、Command Line Tools の `swiftc` だけでビルドします（`shell/build.sh`）。

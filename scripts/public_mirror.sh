@@ -27,7 +27,7 @@ echo "addresses: $(echo $emails)"
 bad=$(echo "$emails" | grep -v -e '+yizilian-iren@users.noreply.github.com$' || true)
 [ -z "$bad" ] || { echo "FAIL: other addresses: $bad"; exit 1; }
 T=$(mktemp -d)
-git log -p --all --format='%an %ae %cn %ce%n%B' > "$T/log"
+git log -p --all --format='%an %ae %cn %ce%n%B' -- . ':!scripts/public_mirror.sh' > "$T/log"  # it names the patterns
 # the old side of each rule (regex rules: the words they remove) must be gone
 sed -n 's/==>.*//p' "$RULES/blobs.txt" "$RULES/messages.txt" | sed 's/^regex:.*(\(.*\))\\n$/\1/' | tr '|' '\n' |
   sed 's/^[a-z]*\\t//' | while IFS= read -r old; do
