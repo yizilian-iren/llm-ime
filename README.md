@@ -1,120 +1,120 @@
-[日本語](README.md) | [中文](README.zh.md)
+[English](README.md) | [日本語](README.ja.md) | [中文](README.zh.md)
 
 # LLM IME
 
-作者：iren（[iren.page](https://iren.page)：ほかの作品もこちら）
+By iren ([iren.page](https://iren.page): more of my work)
 
-中国語ピンインを**略して打てる** macOS の IME です。各音節の頭文字だけを打てば（`wjdzgxfh` → 我觉得这个想法很好）、ファインチューニングした小さな言語モデルが、カーソルの左にある文脈から文全体を当てます。モデルは Mac の中で動き（MLX、4-bit）、変換のために打った内容をクラウドへ送ることはありません。
+A macOS input method for Chinese that lets you **type whole sentences in abbreviated pinyin**. Type only the first letter of each syllable (`wjdzgxfh` → 我觉得这个想法很好) and a small fine-tuned language model works out the whole sentence from the text left of the cursor. The model runs on the Mac itself (MLX, 4-bit); nothing you type is sent to the cloud for conversion.
 
 ![demo](assets/demo/llm-ime-demo.gif)
 
-エディタで頭文字だけを打ち、スペースで確定しています（[mp4](assets/demo/llm-ime-reel.mp4)）。
+Typing only initials in an editor and committing with space ([mp4](assets/demo/llm-ime-reel.mp4)).
 
-## できること
+## What it does
 
-- **頭文字・全拼・混在のどれでも打てる**：`nh` → 你好、`zgwtwmmtztl` → 这个问题我们明天再讨论。打ち方の切り替えはいりません。
-- **文脈を読む**：前の文に合わせて同じキー列から違う文を出します。文脈がない場合の弱さは、チャット文体のデータでファインチューニングして補いました。
-- **打ち間違いに強い**：隣り合う 2 キーの入れ替え（`zhognguo` → 中国）、キーが 1 つ多い・足りない・隣のキーを押した（`kanyuix` → 看一下）でも読めます。
-- **使う言葉を覚える**：選んだ候補は Mac 内の単語リストに入り、次から前に出ます。週に一度、本人の確定履歴でモデルを LoRA で再学習し、良くなったときだけ入れ替えます。
-- **待たせない**：キーを押すたびに、まず短い探索の答え（M3 MacBook Air で p50 約 50 ms）、続いて文全体の探索の答え（4〜8 キーで p50 約 80 ms）を返します。
+- **Initials, full pinyin or a mix of both**: `nh` → 你好, `zgwtwmmtztl` → 这个问题我们明天再讨论. No mode to switch.
+- **Reads the context**: the same keys give different sentences after different text. Fine-tuning on chat-style data made up for the base model's weakness when there is no context.
+- **Forgives typos**: two adjacent keys swapped (`zhognguo` → 中国), a key too many, a key missing, or the key next to the right one (`kanyuix` → 看一下) still read right.
+- **Learns your words**: picked candidates go into a word list on the Mac and come first next time. Once a week the model is retrained with a LoRA on the user's own commits, and swapped in only if it scores better.
+- **Doesn't keep you waiting**: every key gets a quick answer first (p50 about 50 ms on an M3 MacBook Air), then the answer of the full sentence search (p50 about 80 ms for 4–8 keys).
 
-## アーキテクチャ
+## Architecture
 
 ```mermaid
 flowchart LR
-  subgraph Mac["Mac（変換はすべてこの中）"]
-    App["アプリ<br/>（エディタなど）"]
-    Shell["IME 本体<br/>Swift + InputMethodKit<br/>shell/"]
-    Engine["エンジンサービス<br/>Python, launchd<br/>ime/server.py"]
-    Model["変換モデル<br/>Qwen3-0.6B ファインチューニング<br/>MLX 4-bit"]
-    Words["単語リスト<br/>words.json"]
-    Log["打鍵ログ"]
+  subgraph Mac["Mac (all conversion happens here)"]
+    App["App<br/>(an editor, etc.)"]
+    Shell["Input method<br/>Swift + InputMethodKit<br/>shell/"]
+    Engine["Engine service<br/>Python, launchd<br/>ime/server.py"]
+    Model["Conversion model<br/>fine-tuned Qwen3-0.6B<br/>MLX 4-bit"]
+    Words["Word list<br/>words.json"]
+    Log["Typing log"]
     App <--> Shell
-    Shell <-->|"Unix socket<br/>1 行 1 JSON"| Engine
+    Shell <-->|"Unix socket<br/>one JSON per line"| Engine
     Engine --> Model
     Engine <--> Words
     Shell --> Log
   end
-  Log -.->|"週 1 回：確定した候補だけ<br/>（本人の機器の間だけ）"| Retrain["再学習<br/>自宅の GPU で LoRA"]
-  Retrain -.->|"評価で良くなったときだけ"| Model
+  Log -.->|"weekly: committed candidates only<br/>(between the user's own machines)"| Retrain["Retraining<br/>LoRA on a home GPU"]
+  Retrain -.->|"only if it scores better"| Model
 ```
 
-- **IME 本体（`shell/`）**：InputMethodKit で書いた Swift のアプリ。候補ウィンドウ、ページ送り、確定、打鍵ログを受け持ちます。Xcode なしで、Command Line Tools の `swiftc` だけでビルドします（`shell/build.sh`）。
-- **エンジンサービス（`ime/server.py`）**：キーごとの要求を受け、古い要求は捨てて最新のものだけに答えます。答えは 2 段階で、`quick`（短い探索）をすぐ返し、続けて `full`（文全体の beam search）を返します。
-- **変換（`ime/llm.py`）**：モデルの語彙のうち漢字だけでできたトークンを、各字の読みで trie に入れておきます。beam search はこの trie で、打ったキーに合うトークンだけを伸ばします。全ビームを 1 バッチで計算し、文脈の KV cache は使い回します。
+- **Input method (`shell/`)**: a Swift app on InputMethodKit. It handles the candidate window, paging, committing and the typing log. It builds with the Command Line Tools' `swiftc` alone, no Xcode (`shell/build.sh`).
+- **Engine service (`ime/server.py`)**: takes a request per key, drops stale ones and answers only the newest. Each answer comes in two stages: `quick` (a short search) right away, then `full` (a beam search over the whole sentence).
+- **Conversion (`ime/llm.py`)**: every token in the model's vocabulary made only of Han characters is indexed in a trie by its characters' readings. The beam search uses this trie to extend only the tokens that fit the typed keys. All beams run as one batch, and the context's KV cache is reused.
 
-## モデルと学習
+## Model and training
 
-- **ベース**：Qwen3-0.6B-Base。ゼロショットでもピンイン制約つきの beam search はできますが、頭文字入力の P@1 は 11% でした。
-- **学習データ**（`scripts/gen_train.py`）：LCCC（日常会話）と中国語 Wikipedia をほぼ 1:1、それに本人の WeChat で自分が送ったメッセージを約 5%。文のどこかで切り、その前を「文脈」、後ろの 2〜16 字を「正解」にします。キー列は全拼・頭文字・混在を同じ割合で、`pypinyin` で作りました。
-- **プロンプト**：`文脈 + 打ったキー → 正解`。キーをプロンプトに入れることで、モデルは「このキーで書けそうな文」ではなく「このキーで書いた文」を学びます。
-- **学習**：研究室の GPU（RTX 4090 など）でフルファインチューニング（`scripts/train.py`）。文脈のトークンにも重み 0.3 で LM loss をかけ、言語モデルとしての力を落とさないようにしました。
-- **推論**：ファインチューニングしたモデルの点数に、ベースモデルが文脈だけから付けた点数を足します（`mix`）。片方だけより良い結果になりました。
-- **週 1 回の再学習**（`scripts/retrain.py`）：本人の確定履歴から作ったサンプルで、自宅の RTX 4070 で LoRA（rank 16、2.2 GB）を学習し、評価してベースより良いときだけ入れ替えます。
+- **Base**: Qwen3-0.6B-Base. Zero-shot it can already do a pinyin-constrained beam search, but P@1 on initials was 11%.
+- **Training data** (`scripts/gen_train.py`): LCCC (everyday conversation) and Chinese Wikipedia at about 1:1, plus about 5% messages the user sent on WeChat. Each line is cut at a random point: the text before is the context, the next 2–16 characters the target. Keys are made with `pypinyin`, full pinyin, initials and mixed in equal shares.
+- **Prompt**: `context + typed keys → target`. With the keys in the prompt, the model learns "the sentence written with these keys", not just "a likely continuation".
+- **Training**: full fine-tuning on lab GPUs (RTX 4090 and others, `scripts/train.py`). The context tokens also get an LM loss at weight 0.3, so the model keeps its language ability.
+- **Inference**: the fine-tuned model's score plus the base model's score from the context alone (`mix`), which does better than either on its own.
+- **Weekly retraining** (`scripts/retrain.py`): a LoRA (rank 16, 2.2 GB) trained on a home RTX 4070 with samples from the user's commits, evaluated, and swapped in only if it beats the base.
 
-## 評価
+## Evaluation
 
-評価セットは 892 文（本人が書いた文 592 + 公開データ 300）で、同じ文を全拼・頭文字・混在の 3 通りで打ちます。指標は P@1（1 番目の候補が正解の割合、%）です。
+The eval set is 892 sentences (592 written by the user + 300 from public data), each typed three ways: full pinyin, initials and mixed. The metric is P@1 (how often the first candidate is right, %).
 
-| 入力 | n-gram + Viterbi（自作のベースライン） | Qwen3-0.6B ゼロショット | ファインチューニング後（v02） |
+| Input | n-gram + Viterbi (own baseline) | Qwen3-0.6B zero-shot | Fine-tuned (v02) |
 |---|---|---|---|
-| 全拼 | 44.6 | 57.3 | **79.1** |
-| 頭文字 | 3.1 | 11.1 | **18.4** |
-| 混在 | 13.9 | 24.9 | **38.1** |
+| Full pinyin | 44.6 | 57.3 | **79.1** |
+| Initials | 3.1 | 11.1 | **18.4** |
+| Mixed | 13.9 | 24.9 | **38.1** |
 
-- 文脈が一番効きます。ゼロショットでも、16 字以上の文脈があると頭文字の P@1 は 2.7% から 23.1% に上がりました。n-gram は文脈を使えません。
-- 頭文字だけの長い文は情報が少なすぎて、どの方法でも低くなります。実際には区切りながら確定していくので、エンジンも「キー列の先頭だけを読む候補」を出して部分確定できるようにしました。
-- 打ち間違いの評価：キーを 1 つ多く打った混在入力の P@1 は 0.5% → 20.7%、隣のキーを押した場合は 0% → 8.6%。正しく打った入力の P@1 は変わっていません（同じ 200 文で 83.0 / 11.0 / 35.5 → 83.0 / 11.0 / 36.5）。
+- Context matters most. Even zero-shot, 16+ characters of context took P@1 on initials from 2.7% to 23.1%. The n-gram model cannot use context.
+- Long sentences in initials alone carry too little information, and every method scores low on them. Real typing commits in pieces, so the engine also offers candidates for the start of the keys, which can be committed on their own.
+- Typos: on mixed input, P@1 with one extra key went 0.5% → 20.7%, with the key next to the right one 0% → 8.6%. P@1 on correctly typed input did not change (the same 200 sentences: 83.0 / 11.0 / 35.5 → 83.0 / 11.0 / 36.5).
 
-## 苦労した点
+## What was hard
 
-- **頭文字の P@1 は 11% から始まった。** ゼロショットのモデルは Wikipedia 調の文に寄っていて、チャットの短い文が苦手でした。プロンプトの言い回しを変えてもほぼ変わらず、キー列をプロンプトに入れたチャット文体のデータでファインチューニングしたことで、全拼 57 → 79、頭文字 11 → 18 まで上がりました。
-- **1 つのモデルにまとめる試みは 2 回失敗した。** 推論を速くするため、2 モデルの点数を 1 モデルに蒸留する案（r4）と、各字を自分のキーの直後に並べる形式（r4b）を試しましたが、どちらも v02 に届きませんでした。r4b はキーの部分に loss をかけていなかったため、音節の切り方を間違えても罰がなく、8 時間学習してから気づきました。それ以来、新しい形式は数百ステップ学習して 20 文だけ評価してから本番の学習に入っています。
-- **ベースモデルは自分のトークン化で採点させる。** 1 字 1 トークンで与えると、普段は長いトークンの中で書く字（还有 の 还 など）を低く見積もってしまいます。
-- **打ち間違いを直した読みは、直したキーで探索し直す。** ファインチューニングしたモデルはプロンプトのキー列を見て採点するので、直した読みを打ったままのキー列で採点すると必ず負けます。打ったままでは読めないキーにだけ直した読みを別の行で足すことで、頭文字の略記を押しのけないようにしました。
-- **遅さの原因は測ってから決める。** 打鍵ログでは容錯（打ち間違いへの対応）を入れたあと 13〜14% 遅くなったように見えましたが、原因は容錯ではなく、前のキーの文全体の探索を待っていた時間でした。同じプロセスでキーごとに新旧を交互に計測するスクリプト（`scripts/typo_bench.py`）で比べると、増えたのは p50 で 1% 未満でした。
-- **自宅の 4070 で学習する。** ほかの用途で 12 GB のうち約 7.5 GB が埋まっているカードで、LoRA + gradient checkpointing + 4k トークンのバッチにして 2.2 GB に収めました。
+- **P@1 on initials started at 11%.** The zero-shot model leaned towards Wikipedia-style text and struggled with short chat sentences; rewording the prompt hardly helped. Fine-tuning on chat-style data with the keys in the prompt brought full pinyin from 57 to 79 and initials from 11 to 18.
+- **Merging into one model failed twice.** To make inference faster I tried distilling the two models' combined score into one model (r4), and a format with each character right after its own keys (r4b). Neither caught up with v02. r4b put no loss on the keys, so splitting syllables wrong cost nothing, and I only found out after 8 hours of training. Since then every new format gets a few hundred steps and a 20-sentence eval before a full run.
+- **The base model must score with its own tokenization.** Fed one character per token, it underrates characters it normally writes inside a longer token (还 in 还有).
+- **A typo-corrected reading needs a search with the corrected keys.** The fine-tuned model scores against the keys in its prompt, so a corrected reading scored under the keys as typed always loses. Corrected readings are added, in beam rows of their own, only for keys that cannot be read as typed, so they don't push out abbreviations.
+- **Measure before deciding what is slow.** The typing log suggested typo handling made typing 13–14% slower, but the cause was waiting for the previous key's full search. A script that alternates old and new code key by key in one process (`scripts/typo_bench.py`) showed less than 1% at p50.
+- **Training on a home 4070.** About 7.5 of its 12 GB are taken by other uses; LoRA, gradient checkpointing and 4k-token batches fit training into 2.2 GB.
 
-## プライバシー
+## Privacy
 
-- 変換はその Mac の中で完結します。打鍵ログと単語リストもその Mac の中だけにあり、メニューの「删除全部记录」でログ、単語リスト、個人モデルをまとめて消せます。パスワードマネージャーでの入力は記録しません。
-- 週 1 回の再学習のサンプルは本人の機器の間だけを移動し、学習が終われば消します。
-- **モデルの重みは公開していません。** 本人のメッセージで学習したモデルは、学習文をそのまま出力してしまうおそれがあるためです。評価セットにも本人の文が入っているので、公開していません。このリポジトリにあるのはコードとドキュメントだけです。
+- Conversion happens entirely on the Mac. The typing log and the word list stay on that Mac too; the menu item 删除全部记录 (delete all records) removes the log, the word list and the personal model at once. Nothing typed in password managers is logged.
+- The weekly retraining's samples move only between the user's own machines and are deleted after training.
+- **The model weights are not published.** A model trained on personal messages could reproduce its training sentences. The eval set contains the user's own sentences, so it is not published either. This repository has code and documentation only.
 
-## 動かし方
+## Running it
 
-重みは含まれていないので、公開データで学習し直すか、ベースモデルのままゼロショットで試します。
+No weights are included: retrain on public data, or try the base model zero-shot.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install mlx mlx-lm numpy pypinyin jieba
-# ゼロショット：Qwen3-0.6B-Base を MLX 4-bit に変換して試す
+# Zero-shot: convert Qwen3-0.6B-Base to MLX 4-bit and try it
 .venv/bin/mlx_lm.convert --hf-path Qwen/Qwen3-0.6B-Base -q --mlx-path models/qwen3-0.6b-base-4bit
 make repl ARGS="--engines llm"
-# 学習：models/Qwen3-0.6B-Base に HF 形式のモデル、data/corpus/ に LCCC と Wikipedia を置き（ime/corpus.py）、
-# 学習データを作って学習する
-# （--private を付けなければ公開データだけになる）。学習は CUDA の GPU で、別の venv（PyTorch + transformers）
+# Training: the HF model in models/Qwen3-0.6B-Base, LCCC and Wikipedia in data/corpus/ (ime/corpus.py),
+# then make the training data and train
+# (without --private it is public data only). Training needs a CUDA GPU and another venv (PyTorch + transformers)
 python scripts/gen_train.py --out data/train
 python scripts/train.py --out runs/r1
-# IME 本体（macOS 13 以降、Apple Silicon）
+# The input method (macOS 13+, Apple Silicon)
 shell/build.sh
 ```
 
-## リポジトリ構成
+## Repository layout
 
-| パス | 中身 |
+| Path | Contents |
 |---|---|
-| `ime/` | エンジン：ピンイン、n-gram ベースライン、LLM 変換、タイピングセッション、サービス、単語リスト |
-| `shell/` | IME 本体（Swift / InputMethodKit）と候補ウィンドウのモック、テスト |
-| `scripts/` | 学習データ生成、学習、評価、ベンチマーク、デプロイ、週 1 回の再学習 |
-| `CLAUDE.md` | 開発中に見つけた落とし穴のメモ（英語） |
+| `ime/` | The engine: pinyin, n-gram baseline, LLM conversion, typing session, service, word list |
+| `shell/` | The input method (Swift / InputMethodKit), a mock of the candidate window, tests |
+| `scripts/` | Training data, training, evaluation, benchmarks, deployment, weekly retraining |
+| `CLAUDE.md` | Pitfalls found during development |
 
-コメントや commit メッセージにある `5B.8`、`D-019` などは、開発で使っている計画表の項目番号です。
+Ids such as `5B.8` or `D-019` in comments and commit messages are items in the plan the project was built with.
 
-## 使っているデータとライセンス
+## Data and licenses
 
-このリポジトリのコードは [MIT License](LICENSE) です。使っているモデルとデータは、それぞれのライセンスに従います。
+The code in this repository is under the [MIT License](LICENSE). The models and data it uses follow their own licenses.
 
-- [Qwen3-0.6B-Base](https://huggingface.co/Qwen/Qwen3-0.6B-Base)（Apache-2.0）
-- [LCCC](https://github.com/thu-coai/CDial-GPT)、中国語 Wikipedia（学習と字の頻度 `ime/char_freq.tsv`）
-- [OpenCC](https://github.com/BYVoid/OpenCC) の字表（Apache-2.0、`ime/trad_chars.txt`）
-- [SCOWL](http://wordlist.aspell.net)（`ime/en_words.txt`、ファイル内に著作権表示あり）
+- [Qwen3-0.6B-Base](https://huggingface.co/Qwen/Qwen3-0.6B-Base) (Apache-2.0)
+- [LCCC](https://github.com/thu-coai/CDial-GPT), Chinese Wikipedia (training, and character frequencies in `ime/char_freq.tsv`)
+- [OpenCC](https://github.com/BYVoid/OpenCC)'s character tables (Apache-2.0, `ime/trad_chars.txt`)
+- [SCOWL](http://wordlist.aspell.net) (`ime/en_words.txt`, copyright notice inside the file)
