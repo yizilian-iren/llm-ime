@@ -26,7 +26,7 @@ fi
 if [ "$1" = keys ]; then
   swiftc -O -framework AppKit -framework InputMethodKit Sources/Theme.swift Sources/CandidateView.swift \
     Sources/CandidatePanel.swift Sources/EngineClient.swift Sources/InputController.swift Sources/TypingLog.swift \
-    tools/keys/main.swift -o $B/tools/keys
+    Sources/English.swift tools/keys/main.swift -o $B/tools/keys
   $B/tools/keys
 fi
 if [ "$1" = test ]; then

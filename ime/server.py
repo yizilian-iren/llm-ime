@@ -9,6 +9,8 @@ One JSON object per line, both ways:
                                                                  and after a pause "more" (--more: full's first),
                                                                  with "segments": [["今天", 6], ...]: candidates for
                                                                  the start of the keys and how many keys each uses
+  -> {"id": 8, "keys": "pingguo", "mode": "english"}            the English mode (6B.2): one answer, stage
+                                                                 "english", the English of the keys read as pinyin
   -> {"op": "commit", "text": "今天"}                            what was committed; kept in memory as context
   -> {"op": "learn", "keys": "liji", "text": "力积", "first": "理解"}   a pick to learn from (5A.3, ime.userwords)
   -> {"op": "forget"}                                           clears the word list (the menu's 删除全部记录)
@@ -39,7 +41,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ime import engine as engines  # noqa: E402
-from ime import userwords  # noqa: E402
+from ime import userwords, zh_en  # noqa: E402
 from ime.session import Session  # noqa: E402
 
 DEFAULT_SOCK = os.path.expanduser("~/Library/Application Support/llm-ime/engine.sock")
@@ -97,7 +99,7 @@ class Server:
                 context = self.committed
             context, keys = context[-CONTEXT_CHARS:], msg.get("keys", "")
             conn.latest = (msg.get("id"), context, keys)
-            self.session.type(context, keys, tag=conn)
+            self.session.type(context, keys, tag=conn, english=msg.get("mode") == "english")
         elif op == "hurry":
             self.session.hurry(tag=conn)
         elif op == "commit":
@@ -176,6 +178,7 @@ def main():
     t = time.time()
     eng = engines.load(a.engine)
     eng.convert("", "nihao", k=1)  # first call compiles; do it before the shell waits on it
+    zh_en.table()  # the English mode's dictionary (6B.2): 0.25 s to read
     log(f"loaded {a.engine} ({getattr(eng, 'model_path', '?')}) in {time.time() - t:.1f}s")
     words = userwords.UserWords(eng, a.words) if a.words and hasattr(eng, "score") else None
     server = Server(eng, k=a.k, more=a.more, words=words)

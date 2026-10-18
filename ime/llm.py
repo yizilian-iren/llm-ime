@@ -231,7 +231,7 @@ class LLMEngine:
                         self.tok_text.setdefault(t, piece)
                     toks = self._en_tokens[w] = tuple(toks) if at == len(w) else ()
                 if toks:
-                    cost = self.english_penalty + (self.english_pinyin_penalty if self._whole_pinyin(w) else 0.0)
+                    cost = self.english_penalty + (self.english_pinyin_penalty if self.whole_pinyin(w) else 0.0)
                     out.append((p + toks[0][1], toks[0][0], cost, tuple((t, p + e) for t, e in toks[1:])))
         ends = np.array([o[0] for o in out], dtype=np.int32)
         tids = np.array([o[1] for o in out], dtype=np.int32)
@@ -241,7 +241,8 @@ class LLMEngine:
         rests[:] = [o[3] for o in out]
         return ends, tids, costs, fixes_, rests
 
-    def _whole_pinyin(self, w):
+    def whole_pinyin(self, w):
+        """`w` splits into whole syllables of pinyin."""
         ok = [True] + [False] * len(w)
         for i in range(1, len(w) + 1):
             ok[i] = any(ok[i - L] and w[i - L : i] in self.pinyin for L in range(1, min(6, i) + 1))

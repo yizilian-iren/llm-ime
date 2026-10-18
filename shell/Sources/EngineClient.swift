@@ -25,12 +25,14 @@ final class EngineClient {
         queue.async { self.connect() }
     }
 
-    /// Sends the keys typed so far; returns the request id the answers will carry.
+    /// Sends the keys typed so far; returns the request id the answers will carry. `english`: the English mode's
+    /// keys, answered once with stage "english": the English of the keys read as pinyin (6B.2).
     @discardableResult
-    func type(context: String?, keys: String) -> Int {
+    func type(context: String?, keys: String, english: Bool = false) -> Int {
         nextId += 1
         var msg: [String: Any] = ["id": nextId, "keys": keys]
         msg["context"] = context ?? NSNull()
+        if english { msg["mode"] = "english" }
         send(msg)
         return nextId
     }

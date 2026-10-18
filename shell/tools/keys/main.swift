@@ -1,8 +1,8 @@
 import AppKit
 import InputMethodKit
 
-// Checks InputController's key handling against a fake engine (4A.8, 4A.9, 4A.10), and the typing log with its
-// summary (5A.2, in a temporary folder):  shell/build.sh keys
+// Checks InputController's key handling against a fake engine (4A.8, 4A.9, 4A.10, the English mode 6B.2 with this
+// Mac's spell checker), and the typing log with its summary (5A.2, in a temporary folder):  shell/build.sh keys
 // The fake engine answers each key string with a quick guess and a full answer after set delays; the fake app
 // keeps the text the input method commits, and types the keys the input method passes on, as an app would.
 // Shows the candidate panel on this Mac's screen while it runs (a few seconds).
@@ -73,6 +73,10 @@ Thread.detachNewThread {
             guard let id = m["id"] as? Int, let k = m["keys"] as? String else { continue }
             let ctx = m["context"] as? String ?? ""
             DispatchQueue.main.async { Engine.contexts[k] = ctx }
+            if m["mode"] as? String == "english" {  // 6B.2: the English of pinyin, once
+                reply(id, "english", k == "pingguo" ? ["apple", "Apple"] : [], after: 0.05)
+                continue
+            }
             reply(id, "quick", ["Q:" + k, "Q2:" + k], after: Engine.quick)
             reply(id, "full", ["F:" + k, "F2:" + k], after: Engine.full)
             reply(id, "more", ["F:" + k, "F2:" + k] + Engine.moreExtra, after: Engine.more,
@@ -373,6 +377,43 @@ ctl.deleteLog(nil); TypingLog.shared.flush(); wait(0.2)
 check(((try? FileManager.default.contentsOfDirectory(atPath: logDir)) ?? ["?"]).isEmpty, "deleted all")
 check(Engine.learned.last == "forget", "the word list too: \(Engine.learned)")
 Engine.more = nil; Engine.moreExtra = []
+
+// 6B.2: Shift alone switches to English; letters there show candidates: a word as typed first, a misspelling's
+// correction first, pinyin's English among them; Enter the letters, space the word and a space.
+func shift() {
+    for flags in [NSEvent.ModifierFlags.shift, []] {
+        let e = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                                 context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 56)!
+        _ = ctl.handle(e, client: client)
+    }
+}
+Engine.quick = 0.05; Engine.full = 0.1
+let logsBefore = records().count
+shift()
+t = run("english word", letters("apple") + ["space"], settle: 0.3)
+check(t == "apple ", "English: a word as typed, then a space: '\(t)'")
+t = run("english typo", letters("neccesary") + ["space"], settle: 0.3)
+check(t == "necessary ", "English: a misspelling's correction first: '\(t)'")
+client.text = ""
+press(letters("neccesary")); press(["return"])
+check(client.text == "neccesary", "English: Enter types the letters: '\(client.text)'")
+client.text = ""
+press(letters("pingguo")); wait(0.3)
+press(["return"])
+let pinyinEnglish = English.candidates("pingguo", word: false, guesses: [], completions: [], pinyin: ["apple"])
+check(pinyinEnglish.first == "apple", "whole pinyin, not a word: its English first: \(pinyinEnglish)")
+client.text = ""
+press(letters("pingguo")); wait(0.3); press(["space"])
+check(client.text == "apple ", "pingguo -> apple: '\(client.text)'")
+t = run("english capital", ["H", "i", ","], settle: 0.3)
+check(t == "Hi,", "English: capitals typed, punctuation after the word: '\(t)'")
+client.text = ""
+press(letters("abc")); shift()
+check(client.text == "abc", "Shift with English keys: the letters, back to Chinese: '\(client.text)'")
+t = run("chinese again", ["n", "i", "space"])
+check(t == "F:ni", "Chinese again after Shift: \(t)")
+press(["esc"]); TypingLog.shared.flush(); wait(0.2)  // not composing: writes the record kept for deletes after it
+check(records().count == logsBefore + 1, "English typing is not logged: \(records().count - logsBefore) new")
 try? FileManager.default.removeItem(atPath: logDir)
 
 unlink(sock)

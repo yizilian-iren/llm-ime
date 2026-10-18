@@ -27,6 +27,7 @@ start of the keys come first (5A.3); the quick guess puts words learned for all 
 while typing), without the model call of the rerank (5B.10: that cost M3 54 -> 75 ms on the keys it applied to).
 Keys that cannot all be read as pinyin (a typo) still get candidates: the longest prefix that can is
 converted and the rest of the letters follow as typed (4A.4).
+`type(..., english=True)`: the English mode's keys, answered once with stage "english" (6B.2, `_english`).
 `on_result(context, keys, candidates, stage)` is called from the worker thread with stage "quick" / "full" / "more",
 with `tag=` too when the request had one, and `segments=` with "more" when `segments` is on. An exception while converting goes to `on_error()` (called in
 the except block; default: print the traceback) and the worker goes on with the next request.
@@ -35,6 +36,8 @@ All model work stays on the worker thread (MLX state is not shared between threa
 
 import threading
 import traceback
+
+from ime import zh_en
 
 
 class Session:
@@ -55,9 +58,9 @@ class Session:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def type(self, context, keys, tag=None):
+    def type(self, context, keys, tag=None, english=False):
         with self._cond:
-            self._pending[tag] = (context, keys)  # an older one of this tag keeps its place in line
+            self._pending[tag] = (context, keys, english)  # an older one of this tag keeps its place in line
             self._hurry.discard(tag)
             self._cond.notify()
 
@@ -85,9 +88,12 @@ class Session:
                 if self._closed:
                     return
                 tag = next(iter(self._pending))
-                context, keys = self._pending.pop(tag)
+                context, keys, english = self._pending.pop(tag)
             try:
-                self._serve(context, keys, tag)
+                if english:
+                    self._english(context, keys, tag)
+                else:
+                    self._serve(context, keys, tag)
             except Exception:
                 self.on_error()
 
@@ -133,6 +139,19 @@ class Session:
             segs = self.words.segments(keys, segs)
         segs = [(t, e) for t, e in segs if e < len(keys) or t not in whole]
         send(context, keys, whole, "more", segments=segs)
+
+    def _english(self, context, keys, tag):
+        """The English mode's keys (6B.2): when they are whole syllables of pinyin, the English of what they read as
+        Chinese (pingguo: apple), one answer with stage "english"; none otherwise (the shell has the spelling)."""
+        send = (lambda *a, **kw: self.on_result(*a, tag=tag, **kw)) if tag is not None else self.on_result
+        cands = []
+        whole = getattr(self.engine, "whole_pinyin", None)
+        if whole and whole(keys):
+            chinese = self.engine.convert("", keys, k=8, stop=lambda: self._newer(tag))  # English before it: no help
+            if chinese is None:
+                return
+            cands = zh_en.english(chinese)
+        send(context, keys, cands, "english")
 
     def _busy(self):
         with self._cond:

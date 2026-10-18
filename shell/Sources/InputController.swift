@@ -9,6 +9,8 @@ final class InputController: IMKInputController {
     private static var history = ""         // what this input method committed, for apps that hide their text
 
     private var keys = ""
+    private var englishKeys = false          // this composition is in the English mode (6B.2)
+    private var spelled: (word: Bool, guesses: [String], completions: [String]) = (true, [], [])
     private var context: String?             // text before the cursor when this composition began
     private var model = CandidateModel()
     private var requestId = 0
@@ -64,7 +66,6 @@ final class InputController: IMKInputController {
             }
             stopWaiting(client)  // a key only the app can act on: commit what there is first, keeping the order
         }
-        if Self.english { return false }
 
         let mods = event.modifierFlags.intersection([.command, .control, .option])
         if !mods.isEmpty {
@@ -102,6 +103,11 @@ final class InputController: IMKInputController {
             return true
         case 49:  // space
             guard composing else { return false }
+            if englishKeys {  // the word and the space after it, as typing English without candidates
+                commitSelected(model.selected, client, how: "space")
+                insert(" ", client)
+                return true
+            }
             if waitForAnswer(event, full: true) { return true }
             commitSelected(model.selected, client, how: "space")
             return true
@@ -121,9 +127,13 @@ final class InputController: IMKInputController {
         }
 
         if chars.count == 1, let c = chars.unicodeScalars.first {
-            if c.properties.isLowercase && c.isASCII {
-                if !composing && !EngineClient.shared.connected { return false }  // no engine: type letters
-                if !composing {
+            if c.isASCII && (c.properties.isLowercase || Self.english && c.properties.isUppercase) {
+                if !composing && Self.english {  // the spell checker needs no engine; nothing logged or learned
+                    englishKeys = true
+                    context = textBeforeCursor(client)
+                }
+                if !composing && !Self.english && !EngineClient.shared.connected { return false }  // no engine: letters
+                if !composing && !Self.english {
                     context = textBeforeCursor(client)
                     let app = client.bundleIdentifier()
                     comp = TypingLog.shared.logs(app: app) ? Composition(app: app) : nil
@@ -138,12 +148,12 @@ final class InputController: IMKInputController {
                 if model.slot(n) != nil { commitSelected(model.pageRange.lowerBound + n - 1, client, how: "digit") }
                 return true
             }
-            if composing && (chars == "=" || chars == "-") {  // = / - turn the page
+            if composing && !englishKeys && (chars == "=" || chars == "-") {  // = / - turn the page
                 turnPage(chars == "=" ? 1 : -1, client)
                 return true
             }
             if Self.replayable(event) && waitForAnswer(event) { return true }  // punctuation and the like
-            if Punctuation.chineseOn, let p = Punctuation.chinese(for: chars, after: composing ? nil : lastChar(client)) {
+            if Punctuation.chineseOn, !Self.english, let p = Punctuation.chinese(for: chars, after: composing ? nil : lastChar(client)) {
                 if composing { commitBest(client, how: "punct") }
                 insert(p, client)
                 return true
@@ -231,7 +241,9 @@ final class InputController: IMKInputController {
         while waiting != nil { replay(client, force: true) }
     }
 
-    /// Shift pressed and released with nothing in between toggles Chinese / English.
+    /// Shift pressed and released with nothing in between toggles Chinese / English. In English the letters show
+    /// candidates too (6B.2): the word as typed, corrections, completions, the English of pinyin; Enter types them
+    /// as they are, space the selected one and a space, punctuation the selected one and itself.
     private func flagsChanged(_ event: NSEvent, _ client: IMKTextInput) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .shift {
@@ -239,8 +251,8 @@ final class InputController: IMKInputController {
         } else if flags.isEmpty && shiftAlone {
             shiftAlone = false
             stopWaiting(client)  // what was typed before the switch goes out as Chinese
+            if !keys.isEmpty { commit(keys, client, how: "switch") }  // either way: the keys as typed
             Self.english.toggle()
-            if Self.english && !keys.isEmpty { commit(keys, client, how: "switch") }
         } else {
             shiftAlone = false
         }
@@ -261,6 +273,19 @@ final class InputController: IMKInputController {
                              replacementRange: NSRange(location: NSNotFound, length: 0))
         wantNextPage = false
         picked = false
+        if englishKeys {
+            spelled = English.spelling(keys)
+            model.candidates = English.candidates(keys, word: spelled.word, guesses: spelled.guesses,
+                                                  completions: spelled.completions)
+            model.selected = 0
+            stage = "english"
+            answeredKeys = keys.count
+            if EngineClient.shared.connected {
+                requestId = EngineClient.shared.type(context: context ?? Self.history, keys: keys, english: true)
+            }
+            show(client, fade: false)
+            return
+        }
         if keys.count > longest.count { (longest, longestFirst) = (keys, "") }
         let ctx = context ?? String(Self.history.suffix(64))
         requestId = EngineClient.shared.type(context: ctx, keys: keys)
@@ -277,6 +302,14 @@ final class InputController: IMKInputController {
     /// and after those the candidates for the start of the keys (4A.10), so the pages do not run out.
     func engineAnswered(id: Int, stage: String, candidates: [String], segments: [(String, Int)] = []) {
         guard id == requestId, !keys.isEmpty, let client = currentClient else { return }
+        if stage == "english" {  // the English of the keys read as pinyin, merged into the spelling's (6B.2)
+            guard englishKeys, !candidates.isEmpty else { return }
+            model.candidates = English.candidates(keys, word: spelled.word, guesses: spelled.guesses,
+                                                  completions: spelled.completions, pinyin: candidates)
+            model.selected = 0
+            show(client, fade: false)
+            return
+        }
         comp?.answered(id: id, stage: stage)
         answeredKeys = keys.count
         if stage == "more" {
@@ -387,6 +420,7 @@ final class InputController: IMKInputController {
                                  replacementRange: NSRange(location: NSNotFound, length: 0))
         }
         keys = ""
+        englishKeys = false
         longest = ""
         longestFirst = ""
         context = nil

@@ -20,11 +20,15 @@ let scenes = [
     Scene(name: "dark", theme: .darkTheme, page: hex(0x1e1e1e), ink: hex(0xe6e6e6), faint: hex(0x8a8a8e), bar: hex(0x2b2a27)),
 ]
 
-let keys = "jintianqunachifan"
-let model = CandidateModel(
-    candidates: ["今天去哪吃饭", "今天去那吃饭", "今天去拿吃饭", "今天去哪吃饭呢", "今天去那吃番",
-                 "今天去那吃饭呢", "今天去哪吃番", "今天去那吃饭那", "今天去拿吃饭呢", "今天去哪吃饭吧", "今天去那吃饭吧"],
-    selected: 0)
+let shots: [(name: String, prefix: String, keys: String, model: CandidateModel)] = [
+    ("candidates", "下班以后，", "jintianqunachifan", CandidateModel(
+        candidates: ["今天去哪吃饭", "今天去那吃饭", "今天去拿吃饭", "今天去哪吃饭呢", "今天去那吃番",
+                     "今天去那吃饭呢", "今天去哪吃番", "今天去那吃饭那", "今天去拿吃饭呢", "今天去哪吃饭吧", "今天去那吃饭吧"],
+        selected: 0)),
+    // 6B.2: the English mode, a misspelling: its correction first, then the keys as typed and the rest
+    ("english", "It is not ", "neccesary", CandidateModel(
+        candidates: ["necessary", "neccesary", "necessarily", "necessaries", "necessitarian", "necessity"], selected: 0)),
+]
 let icon = CommandLine.arguments.count > 2 ? NSImage(contentsOfFile: CommandLine.arguments[2]) : nil
 
 /// A sunset picture: sky gradient, sun, two hills. Strong colors, so the glass's see-through shows.
@@ -45,7 +49,8 @@ func text(_ s: String, _ font: NSFont, _ color: NSColor) -> NSAttributedString {
     NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color])
 }
 
-func render(_ s: Scene, to url: URL) {
+func render(_ s: Scene, _ shot: (name: String, prefix: String, keys: String, model: CandidateModel), to url: URL) {
+    let (keys, model) = (shot.keys, shot.model)
     let w = Int(sceneSize.width * scale), h = Int(sceneSize.height * scale)
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
     let cg = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: cs,
@@ -85,7 +90,7 @@ func render(_ s: Scene, to url: URL) {
     let body = NSFont.systemFont(ofSize: 15)
     text("周五聚餐", .boldSystemFont(ofSize: 20), s.ink).draw(at: NSPoint(x: 40, y: 48))
     let caretLine: CGFloat = 86, lineH: CGFloat = 26
-    let prefix = text("下班以后，", body, s.ink)
+    let prefix = text(shot.prefix, body, s.ink)
     prefix.draw(at: NSPoint(x: 40, y: caretLine))
     NSAttributedString(string: keys, attributes: [
         .font: body, .foregroundColor: s.ink, .underlineStyle: NSUnderlineStyle.single.rawValue,
@@ -153,5 +158,7 @@ func render(_ s: Scene, to url: URL) {
 let out = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ".")
 try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 for s in scenes {
-    render(s, to: out.appendingPathComponent("candidates-\(s.name).png"))
+    for shot in shots {
+        render(s, shot, to: out.appendingPathComponent("\(shot.name)-\(s.name).png"))
+    }
 }
