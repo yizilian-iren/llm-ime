@@ -4,6 +4,11 @@ From each corpus line: pick a cut point, the target is the next 2–16 Han chara
 text before it, i.e. what an IME sees left of the cursor: the same message for chat, the article so far for
 Wikipedia (dropped to empty 15% of the time). Keys: full / initials / mixed with equal weight; a character with
 EXTRA_READINGS (嗯) is typed by any of its readings (n or en) alike.
+6B.1: a line with English words between its Han characters (Wikipedia's 使用 Python 编写) gives, --english of the
+time, a target with one or more of them instead (使用python编写: English lowercase, no spaces next to it, as the input
+method writes the letters typed), the word typed as it is among the pinyin; --typos of the samples (I-1) have one
+syllable of two keys or more typed with one key too many, missing, or next to the right one (not its first key, as
+the typing log shows them, 5B.8), the target unchanged.
 Sources: LCCC and Wikipedia ~1:1, plus the user's own WeChat messages (--private) at ~5% of samples.
 Stored pre-tokenized: ids (flat int32), offsets, prefix lengths (where the target starts) and the context's
 token span cstart:cend (the context tokens get a down-weighted LM loss in train.py). --order picks the
@@ -25,13 +30,72 @@ from ime import corpus, fmt, pinyin  # noqa: E402
 from ime.ngram import with_extra  # noqa: E402
 
 HAN_RUN = re.compile(r"[一-鿿]{2,}")
+MIXED_RUN = re.compile(r"(?:[一-鿿]+|[A-Za-z]+| )+")
+PART = re.compile(r"[一-鿿]|[A-Za-z]+")
 TOK = None
+ENGLISH, TYPOS = 0.8, 0.1  # set by main
 
 
-def init(tok_path):
-    global TOK
+def mixed_target(line, rng):
+    """(start in line, target, parts) of a span of Han characters with English words between them, or None. parts:
+    one per character, one per English word (lowercase); two English words never next to each other (the space
+    between them would be lost)."""
+    spans = []
+    for m in MIXED_RUN.finditer(line):
+        parts = [(x.start() + m.start(), x.group()) for x in PART.finditer(m.group())]
+        if any(p.isascii() for _, p in parts) and sum(not p.isascii() for _, p in parts) >= 2:
+            spans.append(parts)
+    if not spans:
+        return None
+    parts = rng.choice(spans)
+    en = [i for i, (_, p) in enumerate(parts) if p.isascii() and 2 <= len(p) <= 20]
+    if not en:
+        return None
+    i = rng.choice(en)
+    lo = rng.randint(max(0, i - 8), i)
+    hi = rng.randint(i + 1, min(len(parts), i + 9))
+    win = parts[lo:hi]
+    if sum(not p.isascii() for _, p in win) < 1 or len(win) < 2:
+        return None
+    if any(a.isascii() and b.isascii() for (_, a), (_, b) in zip(win, win[1:])):
+        return None
+    if any(p.isascii() and not 2 <= len(p) <= 20 for _, p in win):
+        return None
+    win = [(at, p.lower() if p.isascii() else p) for at, p in win]
+    return win[0][0], "".join(p for _, p in win), [p for _, p in win]
+
+
+ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")  # as ime.llm, which needs MLX (not on dgx)
+KEY_AT = {c: (y, x + (0, 0.25, 0.75)[y]) for y, row in enumerate(ROWS) for x, c in enumerate(row)}
+
+
+def adjacent(a, b):
+    (ya, xa), (yb, xb) = KEY_AT[a], KEY_AT[b]
+    return a != b and (abs(xa - xb) == 1 if ya == yb else abs(ya - yb) == 1 and abs(xa - xb) <= 0.75)
+
+
+def typo(pieces, rng):
+    """pieces with one key off in one of them of two keys or more (not its first key), or None if none can be."""
+    where = [(i, j) for i, s in enumerate(pieces) for j in range(1, len(s)) if len(s) >= 2 and s.isalpha()]
+    if not where:
+        return None
+    i, j = rng.choice(where)
+    s, kind = pieces[i], rng.choice(("extra", "miss", "near"))
+    if kind == "extra":
+        s = s[:j] + rng.choice([s[j - 1]] + [k for k in "".join(ROWS) if adjacent(k, s[j - 1]) or adjacent(k, s[j])]) + s[j:]
+    elif kind == "miss":
+        s = s[:j] + s[j + 1 :]
+    else:
+        s = s[:j] + rng.choice([k for k in "".join(ROWS) if adjacent(k, s[j])]) + s[j + 1 :]
+    return pieces[:i] + [s] + pieces[i + 1 :]
+
+
+def init(tok_path, english=None, typos=None):
+    global TOK, ENGLISH, TYPOS
     from transformers import AutoTokenizer
 
+    if english is not None:
+        ENGLISH, TYPOS = english, typos
     TOK = AutoTokenizer.from_pretrained(tok_path)
 
 
@@ -40,19 +104,39 @@ def samples(lines, seed):
     rng = random.Random(seed)
     out = []
     for before, line in lines:
-        runs = list(HAN_RUN.finditer(line))
-        if not runs:
-            continue
-        m = rng.choice(runs)
-        start = rng.randrange(m.start(), m.end() - 1)
-        L = min(rng.randint(2, 16), m.end() - start)
-        if L < 2:
-            continue
-        target = line[start : start + L]
+        mixed = mixed_target(line, rng) if rng.random() < ENGLISH else None
+        if mixed:
+            start, target, parts = mixed
+            han = "".join(p for p in parts if not p.isascii())
+            sy = iter(rng.choice(with_extra(han, pinyin.syllables(han))))
+            s = [p if p.isascii() else next(sy) for p in parts]
+            en = [p.isascii() for p in parts]
+        else:
+            runs = list(HAN_RUN.finditer(line))
+            if not runs:
+                continue
+            m = rng.choice(runs)
+            start = rng.randrange(m.start(), m.end() - 1)
+            L = min(rng.randint(2, 16), m.end() - start)
+            if L < 2:
+                continue
+            target = line[start : start + L]
+            s = rng.choice(with_extra(target, pinyin.syllables(target)))  # 嗯 typed n or en (ngram.EXTRA_READINGS)
+            en = [False] * len(s)
         ctx = "" if rng.random() < 0.15 else (before + line[:start])[-fmt.CTX_CHARS :]
-        s = rng.choice(with_extra(target, pinyin.syllables(target)))  # 嗯 typed n or en (ngram.EXTRA_READINGS)
         form = rng.random()
-        pieces = s if form < 1 / 3 else [x[0] for x in s] if form < 2 / 3 else pinyin.mixed_parts(s, rng)
+        if form < 1 / 3:
+            pieces = list(s)
+        elif form < 2 / 3:
+            pieces = [x if e else x[0] for x, e in zip(s, en)]
+        else:  # English words stay whole
+            han = iter(pinyin.mixed_parts([x for x, e in zip(s, en) if not e], rng))
+            pieces = [x if e else next(han) for x, e in zip(s, en)]
+        if rng.random() < TYPOS:
+            off = typo([x for x, e in zip(pieces, en) if not e], rng)
+            if off:
+                off = iter(off)
+                pieces = [x if e else next(off) for x, e in zip(pieces, en)]
         out.append((ctx, "".join(pieces), target, pieces))
     return out
 
@@ -94,9 +178,14 @@ def chunks(it, order, n=5000):
         yield buf, i, order
 
 
-def source(rng, private=None):
-    """(text before, line): LCCC utterances and Wikipedia sentences 1:1; private lines at ~5% of the output."""
+EN_IN_HAN = re.compile(r"[一-鿿] ?[A-Za-z]{2,20} ?[一-鿿]")
+
+
+def source(rng, private=None, english_extra=0.0):
+    """(text before, line): LCCC utterances and Wikipedia sentences 1:1; private lines at ~5% of the output; with
+    english_extra, as many more Wikipedia sentences with an English word between Han characters per LCCC line."""
     w = corpus.wiki_with_prefix(max_chars=400_000_000)
+    en = (x for x in corpus.wiki_with_prefix(max_chars=10**12) if EN_IN_HAN.search(x[1])) if english_extra else None
     for u in corpus.lccc():
         yield "", u
         s = next(w, None)
@@ -104,6 +193,10 @@ def source(rng, private=None):
             yield s
         if private and rng.random() < 0.105:
             yield "", rng.choice(private)
+        if en is not None and rng.random() < english_extra:
+            s = next(en, None)
+            if s is not None:
+                yield s
 
 
 def save(path, rows, keyids=None):
@@ -124,12 +217,18 @@ def main():
     ap.add_argument("--out", default="data/train")
     ap.add_argument("--order", default="ctx_first", choices=fmt.ORDERS)
     ap.add_argument("--private", default="", help="jsonl with a 'text' field (the user's own messages)")
+    ap.add_argument("--english", type=float, default=0.8, help="share of lines with English words giving a mixed target")
+    ap.add_argument("--english-extra", type=float, default=0.25,
+                    help="more Wikipedia lines with English between Han characters, per LCCC line")
+    ap.add_argument("--typos", type=float, default=0.1, help="share of samples with one key off (I-1)")
     a = ap.parse_args()
+    global ENGLISH, TYPOS
+    ENGLISH, TYPOS = (0.0 if a.order == "interleave" else a.english), a.typos
     private = [json.loads(x)["text"] for x in open(a.private)] if a.private else None
     rows = []
     rng = random.Random(0)
-    with Pool(os.cpu_count() - 2, initializer=init, initargs=(a.tokenizer,)) as pool:
-        for r in pool.imap(encode, chunks(source(rng, private), a.order)):
+    with Pool(os.cpu_count() - 2, initializer=init, initargs=(a.tokenizer, ENGLISH, TYPOS)) as pool:
+        for r in pool.imap(encode, chunks(source(rng, private, a.english_extra if ENGLISH else 0.0), a.order)):
             rows += r
             if len(rows) // 200_000 != (len(rows) - len(r)) // 200_000:
                 print(f"  {len(rows)}", flush=True)

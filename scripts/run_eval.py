@@ -98,6 +98,8 @@ def main():
     ap.add_argument("--src", default="", help="only items from this source (user / public)")
     ap.add_argument("--tag", default="")
     ap.add_argument("--opt", action="append", default=[], help="engine option key=value")
+    ap.add_argument("--eval", default="data/private/eval.jsonl",
+                    help="items; data/private/mixed_eval.jsonl: Chinese with English words (6B.1, build_mixed_eval.py)")
     ap.add_argument("--words", default="", help="user words to rerank with (5A.3): keys<TAB>word[<TAB>count] lines")
     a = ap.parse_args()
 
@@ -114,7 +116,7 @@ def main():
         from ime.userwords import UserWords
         words = UserWords(eng, path="")
         print(f"{words.import_file(a.words)} user words", file=sys.stderr)
-    items = [json.loads(line) for line in open("data/private/eval.jsonl")]
+    items = [json.loads(line) for line in open(a.eval)]
     if a.src:
         items = [r for r in items if r["src"] == a.src]
     if a.limit:
@@ -140,7 +142,7 @@ def main():
             p1 = bool(cands) and cands[0] == r["target"]
             p5 = r["target"] in cands[:5]
             for b in ("all", f"{form}", f"{form} {ctx_bucket(r['context'])}", f"{form} {len_bucket(r['target'])}",
-                      f"{form} src={r['src']}"):
+                      f"{form} src={r['src']}") + ((f"{form} en_known={all(r['known'])}",) if "known" in r else ()):
                 h = hits[b]
                 h[0] += 1
                 h[1] += p1
@@ -159,6 +161,8 @@ def main():
 
     os.makedirs("data/private/results", exist_ok=True)
     tag = f"{a.engine}{'-' + a.tag if a.tag else ''}"
+    if a.eval != ap.get_default("eval"):
+        tag += "-" + os.path.basename(a.eval).removesuffix(".jsonl")
     if a.limit or a.src:  # partial runs never overwrite a full run's results
         tag += f"-part{a.limit or ''}{a.src}"
     with open(f"data/private/results/{tag}.jsonl", "w") as f:
