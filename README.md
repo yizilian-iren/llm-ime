@@ -8,14 +8,14 @@ A macOS input method for Chinese that lets you **type whole sentences in abbrevi
 
 ![demo](assets/demo/llm-ime-demo.gif)
 
-Typing only initials in an editor and committing with space ([mp4](assets/demo/llm-ime-reel.mp4)).
+Typing only initials in an editor; space enters the sentence ([mp4](assets/demo/llm-ime-reel.mp4)).
 
 ## What it does
 
 - **Initials, full pinyin or a mix of both**: `nh` → 你好, `zgwtwmmtztl` → 这个问题我们明天再讨论. No mode to switch.
 - **Reads the context**: the same keys give different sentences after different text. Fine-tuning on chat-style data made up for the base model's weakness when there is no context.
 - **Forgives typos**: two adjacent keys swapped (`zhognguo` → 中国), a key too many, a key missing, or the key next to the right one (`kanyuix` → 看一下) still read right.
-- **Learns your words**: picked candidates go into a word list on the Mac and come first next time. Once a week the model is retrained with a LoRA on the user's own commits, and swapped in only if it scores better.
+- **Learns your words**: picked candidates go into a word list on the Mac and come first next time. Once a week the model is retrained with a LoRA on the sentences you typed and picked that week, and swapped in only if it scores better.
 - **Doesn't keep you waiting**: every key gets a quick answer first (p50 about 50 ms on an M3 MacBook Air), then the answer of the full sentence search (p50 about 80 ms for 4–8 keys).
 
 ## Architecture
@@ -35,11 +35,11 @@ flowchart LR
     Engine <--> Words
     Shell --> Log
   end
-  Log -.->|"weekly: committed candidates only<br/>(between the user's own machines)"| Retrain["Retraining<br/>LoRA on a home GPU"]
+  Log -.->|"weekly: picked candidates only<br/>(between the user's own machines)"| Retrain["Retraining<br/>LoRA on a home GPU"]
   Retrain -.->|"only if it scores better"| Model
 ```
 
-- **Input method (`shell/`)**: a Swift app on InputMethodKit. It handles the candidate window, paging, committing and the typing log. It builds with the Command Line Tools' `swiftc` alone, no Xcode (`shell/build.sh`).
+- **Input method (`shell/`)**: a Swift app on InputMethodKit. It handles the candidate window, paging, entering the picked text and the typing log. It builds with the Command Line Tools' `swiftc` alone, no Xcode (`shell/build.sh`).
 - **Engine service (`ime/server.py`)**: takes a request per key, drops stale ones and answers only the newest. Each answer comes in two stages: `quick` (a short search) right away, then `full` (a beam search over the whole sentence).
 - **Conversion (`ime/llm.py`)**: every token in the model's vocabulary made only of Han characters is indexed in a trie by its characters' readings. The beam search uses this trie to extend only the tokens that fit the typed keys. All beams run as one batch, and the context's KV cache is reused.
 
@@ -50,7 +50,7 @@ flowchart LR
 - **Prompt**: `context + typed keys → target`. With the keys in the prompt, the model learns "the sentence written with these keys", not just "a likely continuation".
 - **Training**: full fine-tuning on lab GPUs (RTX 4090 and others, `scripts/train.py`). The context tokens also get an LM loss at weight 0.3, so the model keeps its language ability.
 - **Inference**: the fine-tuned model's score plus the base model's score from the context alone (`mix`), which does better than either on its own.
-- **Weekly retraining** (`scripts/retrain.py`): a LoRA (rank 16, 2.2 GB) trained on a home RTX 4070 with samples from the user's commits, evaluated, and swapped in only if it beats the base.
+- **Weekly retraining** (`scripts/retrain.py`): a LoRA (rank 16, 2.2 GB) trained on a home RTX 4070 with samples from the candidates the user picked that week, evaluated, and swapped in only if it beats the base.
 
 ## Evaluation
 
@@ -63,7 +63,7 @@ The eval set is 892 sentences (592 written by the user + 300 from public data), 
 | Mixed | 13.9 | 24.9 | **38.1** |
 
 - Context matters most. Even zero-shot, 16+ characters of context took P@1 on initials from 2.7% to 23.1%. The n-gram model cannot use context.
-- Long sentences in initials alone carry too little information, and every method scores low on them. Real typing commits in pieces, so the engine also offers candidates for the start of the keys, which can be committed on their own.
+- Long sentences in initials alone carry too little information, and every method scores low on them. In real typing a sentence goes in piece by piece, so the engine also offers candidates for the start of the keys, which can be picked on their own.
 - Typos: on mixed input, P@1 with one extra key went 0.5% → 20.7%, with the key next to the right one 0% → 8.6%. P@1 on correctly typed input did not change (the same 200 sentences: 83.0 / 11.0 / 35.5 → 83.0 / 11.0 / 36.5).
 
 ## What was hard
