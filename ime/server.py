@@ -13,6 +13,8 @@ One JSON object per line, both ways:
   -> {"op": "learn", "keys": "liji", "text": "力积", "first": "理解"}   a pick to learn from (5A.3, ime.userwords)
   -> {"op": "forget"}                                           clears the word list (the menu's 删除全部记录)
                                                                  and deletes the personal model (6A.2)
+  -> {"op": "hurry"}                                            the full answer to this connection's latest keys is
+                                                                 waited for (space): start it now (ime.session)
   -> {"op": "import", "path": "/x/words.tsv", "count": 1, "id": 9}   adds `keys<TAB>word[<TAB>count]` lines
                                                                  <- {"id": 9, "imported": n}
   -> {"op": "ping", "id": 8}   <- {"id": 8, "op": "pong"}
@@ -96,6 +98,8 @@ class Server:
             context, keys = context[-CONTEXT_CHARS:], msg.get("keys", "")
             conn.latest = (msg.get("id"), context, keys)
             self.session.type(context, keys, tag=conn)
+        elif op == "hurry":
+            self.session.hurry(tag=conn)
         elif op == "commit":
             self.committed = (self.committed + msg.get("text", ""))[-CONTEXT_CHARS:]
         elif op == "learn" and self.words:

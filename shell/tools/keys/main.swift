@@ -23,6 +23,7 @@ struct Engine {
     static var moreExtra: [String] = []  // more whole candidates in that answer, after F: and F2:
     static var contexts: [String: String] = [:]  // keys -> the context they came with (read on the main thread)
     static var learned: [String] = []  // "keys text first" of each learn op, and "forget" (5A.3; main thread)
+    static var hurried = 0             // hurry ops (5B.12; main thread)
 }
 let sock = NSTemporaryDirectory() + "llmime-keys-\(getpid()).sock"
 setenv("LLMIME_SOCK", sock, 1)
@@ -60,6 +61,10 @@ Thread.detachNewThread {
             let line = buf[buf.startIndex..<nl]
             buf = Data(buf[(nl + 1)...])
             guard let m = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            if m["op"] as? String == "hurry" {
+                DispatchQueue.main.async { Engine.hurried += 1 }
+                continue
+            }
             if let op = m["op"] as? String, op == "learn" || op == "forget" {
                 let s = op == "forget" ? op : [m["keys"], m["text"], m["first"]].map { $0 as? String ?? "?" }.joined(separator: " ")
                 DispatchQueue.main.async { Engine.learned.append(s) }
@@ -157,7 +162,9 @@ print("warm-up \(Int(Date().timeIntervalSince(w0) * 1000)) ms")
 
 // 4A.8, 1: no candidate yet: space waits for the engine (here the full answer, D-024), never "d".
 Engine.quick = 0.05; Engine.full = 0.25
+Engine.hurried = 0
 check(run("d space", ["d", "space"]) == "F:d", "d + space at once -> the full answer's first: \(client.text)")
+check(Engine.hurried == 1, "space waiting for the full answer hurries the engine once: \(Engine.hurried)")  // 5B.12
 // Keys pressed while waiting queue up, in order; punctuation is English by default (4A.9).
 var t = run("queue", ["d", "space", "e", "space", ",", "x", "space"])
 check(t == "F:dF:e,F:x", "queued keys, in order: \(t)")

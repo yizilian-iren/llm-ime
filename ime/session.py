@@ -12,7 +12,10 @@ do not starve each other. The worker takes each tag's newest request in turn and
      (minus that candidate's last token, whose reading the new key may change), so only the tail is searched,
      without the extra step that scores the end (both cut its time by about a quarter there);
   2. full: the engine's normal search (k candidates); dropped between beam steps as soon as a newer keystroke
-     arrives;
+     arrives. It starts `full_delay` s after the quick guess is sent, and not at all if a newer keystroke comes
+     meanwhile: one beam step's forward cannot be stopped, and on M3 the next key came while the previous key's
+     full search ran on 63% of keys from 4 on, its quick guess waiting for that forward (5B.11, 5B.12). `hurry(tag)`
+     (space waiting for the full answer) starts it at once;
   3. more (when `more` > k, or with `segments`): after a pause of `more_delay` s with nothing else to do, the
      search again for `more` candidates, sent as the full answer's k followed by the new ones (so the first
      page stays put); dropped as soon as any request arrives. Typing is not slowed by it (k=20 for the full
@@ -36,15 +39,17 @@ import traceback
 
 class Session:
     def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False,
-                 words=None, prefix_keys=10):
+                 words=None, prefix_keys=10, full_delay=0.04):
         self.engine, self.on_result, self.k, self.words = engine, on_result, k, words
         self.more, self.more_delay = more, more_delay
         self.segments = segments and hasattr(engine, "segments")
         self.on_error = on_error or traceback.print_exc
         self.quick = quick or dict(k=3, beam=3, mix=True, eos=False)  # convert() options of the quick guess
         self.prefix_keys = prefix_keys  # keys this long or longer: the quick guess starts from the last best
+        self.full_delay = full_delay
         self._cond = threading.Condition()
         self._pending = {}  # tag -> (context, keys), the newest request of each; first come, first served
+        self._hurry = set()  # tags whose latest request's full search is wanted now
         self._closed = False
         self._last = None  # (context, keys, best path) of the latest result, quick or full
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -53,6 +58,13 @@ class Session:
     def type(self, context, keys, tag=None):
         with self._cond:
             self._pending[tag] = (context, keys)  # an older one of this tag keeps its place in line
+            self._hurry.discard(tag)
+            self._cond.notify()
+
+    def hurry(self, tag=None):
+        """The full answer to `tag`'s latest request is waited for (space): no `full_delay` before it."""
+        with self._cond:
+            self._hurry.add(tag)
             self._cond.notify()
 
     def close(self):
@@ -86,8 +98,11 @@ class Session:
             return
         quick = self._quick(context, keys)
         send(context, keys, quick, "quick")
-        if self._newer(tag):
-            return
+        with self._cond:
+            self._cond.wait_for(lambda: self._pending or self._closed or tag in self._hurry, timeout=self.full_delay)
+            self._hurry.discard(tag)
+            if tag in self._pending or self._closed:
+                return
         full = self._convert(context, keys, k=self.k, stop=lambda: self._newer(tag))
         if full is None:
             return

@@ -44,6 +44,11 @@ final class EngineClient {
         send(["op": "learn", "keys": keys, "text": text, "first": first])
     }
 
+    /// Space waits for the full answer to the latest keys: the engine starts it now, not after its pause (5B.12).
+    func hurry() {
+        send(["op": "hurry"])
+    }
+
     /// Clears the engine's word list (删除全部记录).
     func forget() {
         send(["op": "forget"])

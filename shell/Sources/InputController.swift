@@ -166,6 +166,7 @@ final class InputController: IMKInputController {
         waiting = [event]
         waitStart = Date()
         waitForFull = needFull
+        if needFull { EngineClient.shared.hurry() }
         fullGivenUp = false
         waitTimer?.invalidate()
         waitTimer = Timer.scheduledTimer(withTimeInterval: needFull ? 0.4 : 1.0, repeats: false) { [weak self] _ in
