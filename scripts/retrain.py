@@ -10,15 +10,15 @@ exits. A week's run starts Sunday 03:30 and goes through these stages, each retr
            samples replayed, the merged model back to M4 as MLX 4-bit. Not after Monday 09:00.
   eval     on M4: the first candidate on the test days (scripts/retrain_eval.py) and run_eval.py --limit 100, the
            new model against the base.
-  deploy   if better: when M3 is up, nothing typed for 10 min and no key or mouse for 1, the model goes to M3's
-           models/personal-<day>-4bit, models/personal-4bit points at it (ime.engine.personal_or), the engine
-           service restarts. Until the next week's run starts.
+  deploy   if better: when M3 is up (a restart is 3 s, so not waiting for the user to stop typing), the model goes
+           to M3's models/personal-<day>-4bit, models/personal-4bit points at it (ime.engine.personal_or), the
+           engine service restarts. Until the next week's run starts.
 The test days: the newest third of the days in the log while it has fewer than 14, then the newest 7. Training
 data lives only on M3, M4 and home4070 (D-038) and is deleted after; the adapter and the numbers stay in
 runs/<day>/. Every outcome is a section of M3's log/retrain.md (counts only, beside the daily summaries, where the
 main agent reads them); a failure also shows a notification on M3. The input method's menu item 暂停每周重训
 (retrainPaused) skips the week. --now: start a new run now (its training still waits for the night and an
-idle GPU, its deploy for M3 to be quiet).
+idle GPU).
 """
 
 import argparse
@@ -48,8 +48,6 @@ TRAIN_ARGS = ["--lora", "16", "--ckpt", "--tokens", "4096", "--ce-chunk", "256",
               "--lr", "1e-4", "--warmup", "20", "--epochs", "3", "--eval-every", "100000", "--replay-ratio", "1"]
 GPU_IDLE = (15, 8500)  # utilization % and MiB used at most (voice-tts and Windows hold ~7.45 GB)
 NIGHT = (0, 9)  # hours training may start in
-QUIET_S = (600, 60)  # deploy when the typing log is that old and no key or mouse moved for that long: a restart
-                    # is 3 s, and only typing minds it (a mouse that never rests for 10 min kept it waiting)
 MIN_TRAIN = 500  # samples
 
 
@@ -126,15 +124,6 @@ def paused():
         return ssh(M3, f"defaults read {BUNDLE} retrainPaused 2>/dev/null || true", timeout=40).strip() == "1"
     except subprocess.CalledProcessError:
         return False
-
-
-def quiet_s():
-    """Seconds since the typing log was written on M3, and since a key or the mouse moved."""
-    out = ssh(M3, f'm=$(stat -f %m "{M3_BASE}"/log/*.jsonl 2>/dev/null | sort -n | tail -1); '
-                  'i=$(ioreg -c IOHIDSystem | awk "/HIDIdleTime/ {print int(\\$NF/1000000000); exit}"); '
-                  'echo $(( $(date +%s) - ${m:-0} )) $i')
-    log_s, idle_s = (int(x) for x in out.split())
-    return log_s, idle_s
 
 
 # --- the stages ----------------------------------------------------------------------------------------------------
@@ -279,9 +268,6 @@ def deploy(run, work):
         raise Wait("M3 is down")
     if paused():
         raise Skip("paused (暂停每周重训) before deploying")
-    log_s, idle_s = quiet_s()
-    if log_s < QUIET_S[0] or idle_s < QUIET_S[1]:
-        raise Wait(f"the user typed {log_s} s ago, moved {idle_s} s ago")
     first = min(d for d in run["days_list"] if d not in run["test_days"])
     if ssh(M3, f'[ -f "{M3_BASE}/log/{first}.jsonl" ] && echo yes || echo no').strip() != "yes":
         raise Skip("the records it was trained on were deleted (删除全部记录): not deployed")
