@@ -15,7 +15,9 @@ do not starve each other. The worker takes each tag's newest request in turn and
      arrives. It starts `full_delay` s after the quick guess is sent, and not at all if a newer keystroke comes
      meanwhile: one beam step's forward cannot be stopped, and on M3 the next key came while the previous key's
      full search ran on 63% of keys from 4 on, its quick guess waiting for that forward (5B.11, 5B.12). `hurry(tag)`
-     (space waiting for the full answer) starts it at once;
+     (space waiting for the full answer) starts it at once. Default 0: on M3 (scripts/delay_bench.py, the user's
+     key times replayed) 40 / 70 ms left the quick guess of 4-8 keys at 78 ms p50 (the search itself; 79 with
+     none), while the full answer after the last key came 63 / 95 ms later and space waited for it 3x as often;
   3. more (when `more` > k, or with `segments`): after a pause of `more_delay` s with nothing else to do, the
      search again for `more` candidates, sent as the full answer's k followed by the new ones (so the first
      page stays put); dropped as soon as any request arrives. Typing is not slowed by it (k=20 for the full
@@ -42,7 +44,7 @@ from ime import zh_en
 
 class Session:
     def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False,
-                 words=None, prefix_keys=10, full_delay=0.04):
+                 words=None, prefix_keys=10, full_delay=0.0):
         self.engine, self.on_result, self.k, self.words = engine, on_result, k, words
         self.more, self.more_delay = more, more_delay
         self.segments = segments and hasattr(engine, "segments")
