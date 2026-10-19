@@ -51,7 +51,9 @@ final class CandidatePanel: NSObject {
         panel.hasShadow = false  // the system's shadow brings a 0.5 pt dark line around the window: ShadowView instead
         panel.ignoresMouseEvents = true
         panel.hidesOnDeactivate = false
-        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.popUpMenuWindow)) + 1)
+        // Above floating windows of other apps: 有道翻译's is at 200 (kCGHelpWindowLevel), and covered the candidates at
+        // popUpMenu + 1 (6B.4). Below the screen saver and the system's alerts.
+        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.draggingWindow)))
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
 
         let glass = NSVisualEffectView(frame: NSRect(origin: .zero, size: card.size))

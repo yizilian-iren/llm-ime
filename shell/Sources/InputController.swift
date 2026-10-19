@@ -9,6 +9,7 @@ final class InputController: IMKInputController {
     private static var history = ""         // what this input method committed, for apps that hide their text
 
     private var keys = ""
+    private var lastLine: NSRect?             // the last cursor line a client gave that is one, in this composition (6B.4)
     private var englishKeys = false          // this composition is in the English mode (6B.2)
     private var spelled: (word: Bool, guesses: [String], completions: [String]) = (true, [], [])
     private var context: String?             // text before the cursor when this composition began
@@ -420,6 +421,7 @@ final class InputController: IMKInputController {
                                  replacementRange: NSRange(location: NSNotFound, length: 0))
         }
         keys = ""
+        lastLine = nil
         englishKeys = false
         longest = ""
         longestFirst = ""
@@ -503,10 +505,32 @@ final class InputController: IMKInputController {
         (textBeforeCursor(client) ?? Self.history).last
     }
 
+    /// The cursor line the candidates sit under. Index 0 of the marked text, as most clients answer it; a client that
+    /// answers with a rectangle that is no line on any screen (zero, a whole text field, off the screen: some Qt and
+    /// web views) is asked again at the marked and the selected range, and failing that the last good line of this
+    /// composition is kept, else the pointer (6B.4).
     private func cursorLine(_ client: IMKTextInput) -> NSRect {
-        var line = NSRect.zero
-        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &line)
-        return line
+        var indices = [0]
+        for r in [client.markedRange(), client.selectedRange()] where r.location != NSNotFound && !indices.contains(r.location) {
+            indices.append(r.location)
+        }
+        for i in indices {
+            var line = NSRect.zero
+            client.attributes(forCharacterIndex: i, lineHeightRectangle: &line)
+            if Self.isLine(line) {
+                lastLine = line
+                return line
+            }
+        }
+        if let last = lastLine { return last }
+        let p = NSEvent.mouseLocation
+        return NSRect(x: p.x, y: p.y, width: 1, height: 16)
+    }
+
+    /// A rectangle a text line can be: on a screen, not zero, not taller than a few lines.
+    private static func isLine(_ r: NSRect) -> Bool {
+        r.height >= 4 && r.height <= 120 && r.width < 2000 && !(r.origin == .zero)
+            && NSScreen.screens.contains { $0.frame.contains(NSPoint(x: r.minX, y: r.midY)) }
     }
 
     // MARK: IMK
