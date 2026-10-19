@@ -3,7 +3,7 @@
 import os
 from typing import Protocol
 
-V02_BASE = "models/r2-4bit"  # the fine-tuned model engine v02 is built on: the base the weekly retrain trains on
+V02_BASE = "models/r6-4bit"  # the fine-tuned model engine v02 is built on: the base the weekly retrain trains on
 PERSONAL = "models/personal-4bit"  # the weekly retrain's model (6A.2): a LoRA on the user's commits, merged
 
 
@@ -71,6 +71,7 @@ def load(name: str, **kw) -> Engine:
                    alt_bonus=6.0,  # en read as 嗯: enne 嗯呢, enen 嗯嗯 first, en 嗯 in the top 3 (5B.4)
                    single_weight=0.6,  # one syllable typed: common characters first, wo 我 not 沃 (5B.5)
                    english=True,  # github, cpu, tracker as typed first when not pinyin (5B.9)
+                   english_penalty=0.5,  # woyongpythonxie 我用python写: English words inside the keys (6B.1, D-046)
                    typo_penalty=4.0, swap_retries=2)  # yiijingshi 已经是, kanyuix 看一下, shibnush 是不是 (5B.8)
         return LLMEngine(**{**cfg, **kw})
     raise ValueError(f"unknown engine {name}")
