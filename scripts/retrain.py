@@ -330,7 +330,7 @@ def summary(run):
     return lines
 
 
-def step(st, now, force, base=None, hold=False):
+def step(st, now, force, base=None, hold_it=False):
     run = st.get("run")
     start = week_start(now)
     if force or not run or run["week"] < start.isoformat():
@@ -338,7 +338,7 @@ def step(st, now, force, base=None, hold=False):
             note(st, f"{run['day']} 那周的重训没做完，停在 {run['stage']}:{run.get('waiting', '')}")
         run = st["run"] = {"week": start.isoformat(), "day": now.date().isoformat(), "stage": "fetch"}
         if base:
-            run.update(base_override=base, hold=hold)
+            run.update(base_override=base, hold=hold_it)
     if run.get("closed"):
         return
     work = os.path.join(ROOT, "work")
@@ -365,7 +365,6 @@ def step(st, now, force, base=None, hold=False):
         if run["stage"] == "hold":
             hold(run, work)
             run["stage"] = "done"
-            save_state(st)
             save_state(st)
         if run["stage"] == "deploy":
             run["deploy_at"] = time.strftime("%Y-%m-%d %H:%M:%S")  # as the engine's log
