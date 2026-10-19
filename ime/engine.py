@@ -73,6 +73,7 @@ def load(name: str, **kw) -> Engine:
                    english=True,  # github, cpu, tracker as typed first when not pinyin (5B.9)
                    english_penalty=0.5,  # woyongpythonxie 我用python写: English words inside the keys (6B.1, D-046)
                    idiom_bonus=6.0,  # zhigenzhidi 知根知底: idioms of ime/idioms.tsv read whole (6B.3)
+                   word_top=100000,  # jigexian 及格线: a word the keys are the whole pinyin of is in the first 5 (6B.7)
                    typo_penalty=4.0, swap_retries=2)  # yiijingshi 已经是, kanyuix 看一下, shibnush 是不是 (5B.8)
         return LLMEngine(**{**cfg, **kw})
     raise ValueError(f"unknown engine {name}")
