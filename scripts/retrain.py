@@ -344,6 +344,9 @@ def step(st, now, force, base=None, hold=False):
     work = os.path.join(ROOT, "work")
     os.makedirs(work, mode=0o700, exist_ok=True)
     deadline = (start + datetime.timedelta(days=1, hours=5, minutes=30)).isoformat()  # Monday 09:00
+    if run.get("base_override"):  # --now --base: a run of its own, not the week's
+        run.setdefault("started", now.isoformat())
+        deadline = (datetime.datetime.fromisoformat(run["started"]) + datetime.timedelta(hours=36)).isoformat()
     try:
         if run["stage"] == "fetch":
             if not up(M3):
