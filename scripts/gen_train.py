@@ -9,6 +9,9 @@ time, a target with one or more of them instead (使用python编写: English low
 method writes the letters typed), the word typed as it is among the pinyin; --typos of the samples (I-1) have one
 syllable of two keys or more typed with one key too many, missing, or next to the right one (not its first key, as
 the typing log shows them, 5B.8), the target unchanged.
+6B.6: --align of the targets start and end at a word boundary of jieba (the user's commits do, 94%), else anywhere in the
+run of Han characters: a model trained with random cuts learns that the context may stop in the middle of a word (修|成)
+and that the target may too (在选|择), and ranks 成与 above 成语 after 修.
 Sources: LCCC and Wikipedia ~1:1, plus the user's own WeChat messages (--private) at ~5% of samples.
 Stored pre-tokenized: ids (flat int32), offsets, prefix lengths (where the target starts) and the context's
 token span cstart:cend (the context tokens get a down-weighted LM loss in train.py). --order picks the
@@ -33,7 +36,7 @@ HAN_RUN = re.compile(r"[一-鿿]{2,}")
 MIXED_RUN = re.compile(r"(?:[一-鿿]+|[A-Za-z]+| )+")
 PART = re.compile(r"[一-鿿]|[A-Za-z]+")
 TOK = None
-ENGLISH, TYPOS = 0.8, 0.1  # set by main
+ENGLISH, TYPOS, ALIGN = 0.8, 0.1, 0.0  # set by main
 
 
 def mixed_target(line, rng):
@@ -90,13 +93,32 @@ def typo(pieces, rng):
     return pieces[:i] + [s] + pieces[i + 1 :]
 
 
-def init(tok_path, english=None, typos=None):
-    global TOK, ENGLISH, TYPOS
+def init(tok_path, english=None, typos=None, align=None):
+    global TOK, ENGLISH, TYPOS, ALIGN
     from transformers import AutoTokenizer
 
     if english is not None:
-        ENGLISH, TYPOS = english, typos
+        ENGLISH, TYPOS, ALIGN = english, typos, align
     TOK = AutoTokenizer.from_pretrained(tok_path)
+
+
+def word_cut(run, rng):
+    """(start, end) in the Han run `run`, 2 to 16 characters, both at a word boundary of jieba, or None when no such
+    cut exists (a word longer than 16 characters)."""
+    import jieba
+
+    bounds, at = [0], 0
+    for w in jieba.lcut(run):
+        at += len(w)
+        bounds.append(at)
+    starts = bounds[:-1]
+    rng.shuffle(starts)
+    for start in starts:
+        ends = [b for b in bounds if start + 2 <= b <= start + 16]
+        if ends:
+            want = start + rng.randint(2, 16)  # the length as the random cut draws it, then the boundary at or before it
+            return start, max([b for b in ends if b <= want] or [min(ends)])
+    return None
 
 
 def samples(lines, seed):
@@ -116,8 +138,12 @@ def samples(lines, seed):
             if not runs:
                 continue
             m = rng.choice(runs)
-            start = rng.randrange(m.start(), m.end() - 1)
-            L = min(rng.randint(2, 16), m.end() - start)
+            cut = word_cut(m.group(), rng) if rng.random() < ALIGN else None
+            if cut:
+                start, L = m.start() + cut[0], cut[1] - cut[0]
+            else:
+                start = rng.randrange(m.start(), m.end() - 1)
+                L = min(rng.randint(2, 16), m.end() - start)
             if L < 2:
                 continue
             target = line[start : start + L]
@@ -221,13 +247,14 @@ def main():
     ap.add_argument("--english-extra", type=float, default=0.25,
                     help="more Wikipedia lines with English between Han characters, per LCCC line")
     ap.add_argument("--typos", type=float, default=0.1, help="share of samples with one key off (I-1)")
+    ap.add_argument("--align", type=float, default=0.0, help="share of targets cut at jieba word boundaries (6B.6)")
     a = ap.parse_args()
-    global ENGLISH, TYPOS
-    ENGLISH, TYPOS = (0.0 if a.order == "interleave" else a.english), a.typos
+    global ENGLISH, TYPOS, ALIGN
+    ENGLISH, TYPOS, ALIGN = (0.0 if a.order == "interleave" else a.english), a.typos, a.align
     private = [json.loads(x)["text"] for x in open(a.private)] if a.private else None
     rows = []
     rng = random.Random(0)
-    with Pool(os.cpu_count() - 2, initializer=init, initargs=(a.tokenizer, ENGLISH, TYPOS)) as pool:
+    with Pool(os.cpu_count() - 2, initializer=init, initargs=(a.tokenizer, ENGLISH, TYPOS, ALIGN)) as pool:
         for r in pool.imap(encode, chunks(source(rng, private, a.english_extra if ENGLISH else 0.0), a.order)):
             rows += r
             if len(rows) // 200_000 != (len(rows) - len(r)) // 200_000:

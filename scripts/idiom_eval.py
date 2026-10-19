@@ -2,6 +2,7 @@
 odd words first, after personal-20261018 and the Rime import).
 
   .venv/bin/python scripts/idiom_eval.py --model models/r2-4bit --model models/personal-20261018-4bit [--n 200]
+  a model may carry engine options: --model models/r6-4bit@idiom_bonus=3,english_penalty=0.5
 
 Public items only: the n most frequent idioms of jieba's dictionary (tag i, four characters) and n words of two or
 three characters drawn at random from ranks 300-3000, typed as full pinyin and as initials, with no context, and
@@ -47,7 +48,8 @@ def main():
     sets = items(a.n)
     res = {}
     for m in a.model:
-        eng = engines.load("v02", model=m)
+        path, _, opt = m.partition("@")  # models/r6-4bit@idiom_bonus=3: engine options after @, comma separated
+        eng = engines.load("v02", model=path, **{k: float(v) for k, v in (o.split("=") for o in opt.split(",") if o)})
         for kind, ws in sets.items():
             for ini in (False, True):
                 for w in ws:
@@ -57,7 +59,7 @@ def main():
         for ini in (False, True):
             for m in a.model:
                 r = [res[(m, kind, ini, w)] for w in ws]
-                print(f"{kind:5} {'initials' if ini else 'full':8} {os.path.basename(m):26} n={len(ws)} "
+                print(f"{kind:5} {'initials' if ini else 'full':8} {os.path.basename(m):34} n={len(ws)} "
                       f"P@1 {100 * sum(x[1] == 1 for x in r) / len(ws):.1f}  P@5 {100 * sum(x[1] is not None for x in r) / len(ws):.1f}")
     if len(a.model) == 2:
         m0, m1 = a.model

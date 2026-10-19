@@ -24,6 +24,7 @@ from ime.ngram import EXTRA_READINGS, Node, char_logp, char_readings_table, with
 MAX_COMBOS = 16  # reading combinations per token (polyphones multiply)
 SINGLE_PAGE = 5  # one whole syllable typed: this many of its characters come before any other candidate
 EN_WORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "en_words.txt")  # scripts/build_en_words.py
+IDIOMS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idioms.tsv")  # scripts/build_idioms.py
 TRAD_CHARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trad_chars.txt")  # scripts/build_trad_chars.py
 
 
@@ -34,7 +35,7 @@ class LLMEngine:
                  empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
                  split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
                  swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False, typo_penalty=0.0,
-                 typo_rows=3, english_penalty=0.0, english_pinyin_penalty=0.0):
+                 typo_rows=3, english_penalty=0.0, english_pinyin_penalty=0.0, idiom_bonus=0.0):
         self.model, self.tok = load(model)
         self.model_path = model  # for the service's log: the base or the weekly retrain's (6A.2)
         self.mix = _Cached(load(mix)[0]) if mix else None
@@ -79,6 +80,11 @@ class LLMEngine:
         # for a word whose letters are whole pinyin syllables too (change: 嫦娥, long: 龙).
         self.english_penalty, self.english_pinyin_penalty = float(english_penalty), float(english_pinyin_penalty)
         self._en_tokens = {}  # word -> ((token id, key end offset), ...)
+        # idiom_bonus: nats credited for keys that are the whole pinyin of an idiom of ime/idioms.tsv (zhigenzhidi 知根知底,
+        # 6B.3), its tokens scored by the model like any other; 0 turns it off
+        self.idiom_bonus = float(idiom_bonus)
+        self.idioms, self._idiom_lens = _idioms() if self.idiom_bonus else ({}, ())
+        self._idiom_tokens = {}  # idiom -> ((token id, key end offset), ...) or ()
         self.pinyin = {s for s in self.syllables if any(v in s for v in "aeiouv")}  # not n, m, hm of 嗯 呣
         self.pinyin_starts = {s[:i] for s in self.pinyin for i in range(1, len(s) + 1)}
         # typo_penalty: nats for reading a typed syllable with one key too many, one missing, or one hit next to the
@@ -233,6 +239,36 @@ class LLMEngine:
                 if toks:
                     cost = self.english_penalty + (self.english_pinyin_penalty if self.whole_pinyin(w) else 0.0)
                     out.append((p + toks[0][1], toks[0][0], cost, tuple((t, p + e) for t, e in toks[1:])))
+        ends = np.array([o[0] for o in out], dtype=np.int32)
+        tids = np.array([o[1] for o in out], dtype=np.int32)
+        costs = np.array([o[2] for o in out], dtype=np.float32)
+        fixes_, rests = np.empty(len(out), dtype=object), np.empty(len(out), dtype=object)
+        fixes_[:] = [()] * len(out)
+        rests[:] = [o[3] for o in out]
+        return ends, tids, costs, fixes_, rests
+
+    def idiom_edges(self, keys, p):
+        """Idioms of which the keys from position p are the whole pinyin (idiom_bonus): like english_edges, at cost
+        -idiom_bonus."""
+        out = []
+        for L in self._idiom_lens:
+            if p + L > len(keys):
+                break
+            for w, sylls in self.idioms.get(keys[p : p + L], ()):
+                toks = self._idiom_tokens.get(w)
+                if toks is None:
+                    toks, at, done = [], 0, 0
+                    for t in self.tok.encode(w):
+                        piece = self.tok.decode([t])
+                        done += len(piece)
+                        at = sum(len(x) for x in sylls[:done])
+                        toks.append((t, at))
+                        self.tok_text.setdefault(t, piece)
+                    ok = done == len(w) and all(self.tok_text[t] and all("一" <= c <= "鿿" for c in self.tok_text[t])
+                                                for t, _ in toks)
+                    toks = self._idiom_tokens[w] = tuple(toks) if ok else ()
+                if toks:
+                    out.append((p + toks[0][1], toks[0][0], -self.idiom_bonus, tuple((t, p + e) for t, e in toks[1:])))
         ends = np.array([o[0] for o in out], dtype=np.int32)
         tids = np.array([o[1] for o in out], dtype=np.int32)
         costs = np.array([o[2] for o in out], dtype=np.float32)
@@ -460,6 +496,8 @@ class LLMEngine:
                 e = (*e, rests)
                 if self.english_penalty:
                     e = tuple(np.concatenate([a, b]) for a, b in zip(e, self.english_edges(keys, p)))
+                if self.idiom_bonus:
+                    e = tuple(np.concatenate([a, b]) for a, b in zip(e, self.idiom_edges(keys, p)))
                 last = np.array([r[-1][1] if r else x for x, r in zip(e[0], e[4])], dtype=np.int32)
                 ok = np.array([feasible[x] for x in last], dtype=bool)
                 edge_cache[p] = tuple(x[ok] for x in e) if len(e[0]) else e
@@ -747,6 +785,17 @@ def _simplified_first(texts, text=lambda t: t):
 
 def _english_words():
     return frozenset(line.strip() for line in open(EN_WORDS, encoding="utf-8") if not line.startswith("#"))
+
+
+def _idioms():
+    """({whole pinyin: [(idiom, syllables)]}, the lengths of those keys sorted)."""
+    table = {}
+    for line in open(IDIOMS, encoding="utf-8"):
+        if not line.startswith("#"):
+            w, py = line.rstrip("\n").split("\t")
+            sylls = tuple(py.split())
+            table.setdefault("".join(sylls), []).append((w, sylls))
+    return table, tuple(sorted({len(k) for k in table}))
 
 
 def _gb2312(text):
