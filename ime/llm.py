@@ -25,6 +25,7 @@ MAX_COMBOS = 16  # reading combinations per token (polyphones multiply)
 SINGLE_PAGE = 5  # one whole syllable typed: this many of its characters come before any other candidate
 EN_WORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "en_words.txt")  # scripts/build_en_words.py
 IDIOMS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idioms.tsv")  # scripts/build_idioms.py
+WORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "words.tsv")  # scripts/build_words.py
 TRAD_CHARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trad_chars.txt")  # scripts/build_trad_chars.py
 
 
@@ -35,7 +36,8 @@ class LLMEngine:
                  empty_prompt="\n", keys_in_prompt=None, mix="", mix_weight=0.5, mix_weight_empty=None,
                  split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
                  swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False, typo_penalty=0.0,
-                 typo_rows=3, english_penalty=0.0, english_pinyin_penalty=0.0, idiom_bonus=0.0):
+                 typo_rows=3, english_penalty=0.0, english_pinyin_penalty=0.0, idiom_bonus=0.0,
+                 word_top=0, word_slot=4, word_n=1):
         self.model, self.tok = load(model)
         self.model_path = model  # for the service's log: the base or the weekly retrain's (6A.2)
         self.mix = _Cached(load(mix)[0]) if mix else None
@@ -84,7 +86,14 @@ class LLMEngine:
         # 6B.3), its tokens scored by the model like any other; 0 turns it off
         self.idiom_bonus = float(idiom_bonus)
         self.idioms, self._idiom_lens = _idioms() if self.idiom_bonus else ({}, ())
-        self._idiom_tokens = {}  # idiom -> ((token id, key end offset), ...) or ()
+        self._idiom_tokens = {}  # idiom or word -> ((token id, key end offset), ...) or ()
+        # word_top: the keys that are the whole pinyin of one of the word_top most frequent words of ime/words.tsv
+        # (jieba's dictionary, 6B.7) get up to word_n of them, the most frequent first, at place word_slot of the
+        # candidates if the search has not found them: jigexian 及格线 is 20 nats behind 几个线 for the model, no bonus
+        # that lifts it leaves the rest of the sentences alone (a floor on the first token, word edges: plain set -6 to
+        # -28 points); 0 turns it off
+        self.word_top, self.word_slot, self.word_n = int(word_top), int(word_slot), int(word_n)
+        self.words = _words(self.word_top) if self.word_top else {}
         self.pinyin = {s for s in self.syllables if any(v in s for v in "aeiouv")}  # not n, m, hm of 嗯 呣
         self.pinyin_starts = {s[:i] for s in self.pinyin for i in range(1, len(s) + 1)}
         # typo_penalty: nats for reading a typed syllable with one key too many, one missing, or one hit next to the
@@ -255,18 +264,7 @@ class LLMEngine:
             if p + L > len(keys):
                 break
             for w, sylls in self.idioms.get(keys[p : p + L], ()):
-                toks = self._idiom_tokens.get(w)
-                if toks is None:
-                    toks, at, done = [], 0, 0
-                    for t in self.tok.encode(w):
-                        piece = self.tok.decode([t])
-                        done += len(piece)
-                        at = sum(len(x) for x in sylls[:done])
-                        toks.append((t, at))
-                        self.tok_text.setdefault(t, piece)
-                    ok = done == len(w) and all(self.tok_text[t] and all("一" <= c <= "鿿" for c in self.tok_text[t])
-                                                for t, _ in toks)
-                    toks = self._idiom_tokens[w] = tuple(toks) if ok else ()
+                toks = self._han_tokens(w, sylls)
                 if toks:
                     out.append((p + toks[0][1], toks[0][0], -self.idiom_bonus, tuple((t, p + e) for t, e in toks[1:])))
         ends = np.array([o[0] for o in out], dtype=np.int32)
@@ -276,6 +274,43 @@ class LLMEngine:
         fixes_[:] = [()] * len(out)
         rests[:] = [o[3] for o in out]
         return ends, tids, costs, fixes_, rests
+
+    def _han_tokens(self, w, sylls):
+        """((token id, key end offset), ...) of the Han text `w` read as `sylls`, () when its tokens are not whole
+        characters."""
+        toks = self._idiom_tokens.get(w)
+        if toks is None:
+            toks, at, done = [], 0, 0
+            for t in self.tok.encode(w):
+                piece = self.tok.decode([t])
+                done += len(piece)
+                at = sum(len(x) for x in sylls[:done])
+                toks.append((t, at))
+                self.tok_text.setdefault(t, piece)
+            ok = done == len(w) and all(self.tok_text[t] and all("一" <= c <= "鿿" for c in self.tok_text[t])
+                                        for t, _ in toks)
+            toks = self._idiom_tokens[w] = tuple(toks) if ok else ()
+        return toks
+
+    def _whole_words(self, context, keys, out):
+        """`out` with the words that the keys are the whole pinyin of (word_top) added if the search has not got them
+        before place word_slot: scored with the first of `out` by the model after the context (score), each word
+        goes to its rank there but at the latest place word_slot, its path with it."""
+        at = min(self.word_slot, len(out))
+        add = [(w, sylls) for w, sylls in self.words.get(keys, ()) if w not in out[:at] and self._han_tokens(w, sylls)]
+        add = add[: self.word_n]
+        if not add:
+            return out
+        names = [w for w, _ in add]
+        for w, sylls in add:
+            self.paths.setdefault(w, tuple(self._han_tokens(w, sylls)))
+        rest = [t for t in out if t not in names]
+        head = rest[:at]
+        scores = self.score(context, keys, head + names)
+        for w, sc in zip(names, scores[len(head) :]):
+            place = sum(x > sc for x in scores[: len(head)])
+            head.insert(min(place, at), w)
+        return head + rest[at:]
 
     def whole_pinyin(self, w):
         """`w` splits into whole syllables of pinyin."""
@@ -404,6 +439,8 @@ class LLMEngine:
         out = _simplified_first(out)  # 這樣 after 这样 / 着养 / 遮阳 / 蒸养 (5B.7)
         if single:
             out = self._single_first(context, keys, mix, out)
+        if self.word_top and k > self.word_slot:
+            out = self._whole_words(context, keys, out)
         if keys in self.english and not self._full_pinyin_so_far(keys):
             out = [keys] + [t for t in out if t != keys]  # 5B.9
         return out[:k]
@@ -796,6 +833,21 @@ def _idioms():
             sylls = tuple(py.split())
             table.setdefault("".join(sylls), []).append((w, sylls))
     return table, tuple(sorted({len(k) for k in table}))
+
+
+def _words(top):
+    """{whole pinyin: [(word, syllables)]} of the `top` most frequent words of ime/words.tsv (most frequent first)."""
+    table = {}
+    for line in open(WORDS, encoding="utf-8"):
+        if line.startswith("#"):
+            continue
+        if top <= 0:
+            break
+        w, py, _ = line.rstrip("\n").split("\t")
+        sylls = tuple(py.split())
+        table.setdefault("".join(sylls), []).append((w, sylls))
+        top -= 1
+    return table
 
 
 def _gb2312(text):

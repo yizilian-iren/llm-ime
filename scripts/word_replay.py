@@ -7,6 +7,7 @@ counts, and with --show the misses one by one.
       --model models/personal-20261018-4bit --variants base,word3,first3'
 
 It runs only while the user is away: before each item it waits until M3 has had no key or mouse input for 2 min.
+A variant may carry engine options: base@word_top=30000,word_floor=2.
 Items: commits of Han characters by space / digit / enter whose text is one of the candidates shown for all the keys.
 "word misses": the first candidate was not committed and is, unlike the commit, not a jieba word (先在 for 现在) or joined
 by jieba to the context's last character (修 + 成与); "controls": --controls commits whose first candidate was committed
@@ -31,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from word_ctx_eval import dict_words, patch  # noqa: E402
 
 from ime import engine as engines  # noqa: E402
+from ime import llm  # noqa: E402
 
 HAN = re.compile(r"^[一-鿿]+$")
 LOG = os.path.expanduser("~/Library/Application Support/llm-ime/log")
@@ -95,11 +97,16 @@ def main():
     jieba.setLogLevel(60)
     common, pairs = dict_words()
     misses, ok = items(a.controls)
+    whole = llm._words(100000)  # 6B.7: the commit is one word read from the whole keys, or a piece of something longer
+    n_whole = sum(any(w == t for w, _s in whole.get(k, ())) for _c, k, t in misses)
+    print(f"word misses n={len(misses)}: the keys are the whole pinyin of the commit, a word of ime/words.tsv: {n_whole}; "
+          f"longer than a word: {len(misses) - n_whole}", flush=True)
     firsts = {}
     for v in a.variants.split(","):
         wait_idle()
-        eng = engines.load("v02", model=a.model)
-        patch(eng, v, common, pairs)
+        name, _, opt = v.partition("@")  # base@word_top=30000,word_floor=2: engine options after @ (6B.7)
+        eng = engines.load("v02", model=a.model, **{k: float(x) for k, x in (o.split("=") for o in opt.split(",") if o)})
+        patch(eng, name, common, pairs)
         got = [convert(eng, c, k) for c, k, _t in misses]
         kept = sum(bool(x) and x[0] == t for (c, k, t), x in zip(ok, (convert(eng, c, k) for c, k, _t in ok)))
         fixed = sum(bool(x) and x[0] == t for (_c, _k, t), x in zip(misses, got))
