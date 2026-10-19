@@ -18,7 +18,8 @@ data lives only on M3, M4 and home4070 (D-038) and is deleted after; the adapter
 runs/<day>/. Every outcome is a section of M3's log/retrain.md (counts only, beside the daily summaries, where the
 main agent reads them); a failure also shows a notification on M3. The input method's menu item 暂停每周重训
 (retrainPaused) skips the week. --now: start a new run now (its training still waits for the night and an
-idle GPU).
+idle GPU). --now --base r6-4bit --hold: train on another base and keep the result in ROOT/held/
+personal-<day>-4bit instead of deploying (a new base whose engine switch is not merged yet, D-046).
 """
 
 import argparse
@@ -133,7 +134,7 @@ def fetch(run, work):
         raise Skip("paused (暂停每周重训)")
     base = ssh(M3, f'cd "{M3_BASE}/engine" && PYTHONPATH=. {M3_PY} -c '
                    '"from ime.engine import base_model; print(base_model())"').strip()
-    run["base"] = os.path.basename(base)  # r2-4bit
+    run["base"] = run.get("base_override") or os.path.basename(base)  # r2-4bit
     samples = os.path.join(work, "samples.jsonl")
     with open(os.path.join(CODE, "scripts", "retrain_samples.py")) as src, open(samples, "w") as out:
         subprocess.run(SSH + [M3, f'cd "{M3_BASE}/engine" && PYTHONPATH=. {M3_PY} -'], stdin=src, stdout=out,
@@ -294,6 +295,17 @@ def deploy(run, work):
     log(f"deployed {name} (before: {prev or 'the base'})")
 
 
+def hold(run, work):
+    """--base --hold: a personal model on a base M3 does not run yet; it waits in ROOT/held/ for the engine switch."""
+    name = f"personal-{run['day'].replace('-', '')}-4bit"
+    dst = os.path.join(ROOT, "held", name)
+    shutil.rmtree(dst, ignore_errors=True)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copytree(os.path.join(work, "new-4bit"), dst)
+    run["held"] = dst
+    log(f"held {dst} (not deployed; base {run['base']})")
+
+
 class Skip(Exception):
     """This week's run ends here, with the reason in retrain.md."""
 
@@ -311,18 +323,22 @@ def summary(run):
         lines.append(f"训练 {run['train_s']} s,峰值 {run.get('train_mem_gb')} GB;{run.get('valid', '')}")
     if run.get("deployed"):
         lines.append(f"已部署 {run['deployed']}")
+    elif run.get("held"):
+        lines.append(f"没部署，留着等底座切换：{run['held']}")
     elif t:
         lines.append(f"没部署：{run.get('why')}")
     return lines
 
 
-def step(st, now, force):
+def step(st, now, force, base=None, hold=False):
     run = st.get("run")
     start = week_start(now)
     if force or not run or run["week"] < start.isoformat():
         if run and not run.get("closed"):
             note(st, f"{run['day']} 那周的重训没做完，停在 {run['stage']}:{run.get('waiting', '')}")
         run = st["run"] = {"week": start.isoformat(), "day": now.date().isoformat(), "stage": "fetch"}
+        if base:
+            run.update(base_override=base, hold=hold)
     if run.get("closed"):
         return
     work = os.path.join(ROOT, "work")
@@ -341,7 +357,12 @@ def step(st, now, force):
             save_state(st)
         if run["stage"] == "eval":
             evaluate(run, work, st)
-            run["stage"] = "deploy" if run["better"] else "done"
+            run["stage"] = "hold" if run.get("hold") else "deploy" if run["better"] else "done"
+            save_state(st)
+        if run["stage"] == "hold":
+            hold(run, work)
+            run["stage"] = "done"
+            save_state(st)
             save_state(st)
         if run["stage"] == "deploy":
             run["deploy_at"] = time.strftime("%Y-%m-%d %H:%M:%S")  # as the engine's log
@@ -397,6 +418,8 @@ def close(st, run, work):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--now", action="store_true", help="start this week's run now")
+    ap.add_argument("--base", help="with --now: train on this base (models/<base>, e.g. r6-4bit), not M3's deployed one")
+    ap.add_argument("--hold", action="store_true", help="with --base: keep the result in ROOT/held/, do not deploy")
     a = ap.parse_args()
     os.makedirs(ROOT, mode=0o700, exist_ok=True)
     with open(os.path.join(ROOT, "lock"), "w") as lock:
@@ -406,7 +429,7 @@ def main():
             return  # the previous hour's run is still at it
         st = load_state()
         st.setdefault("notes", [])
-        step(st, datetime.datetime.now(), a.now)
+        step(st, datetime.datetime.now(), a.now, a.base, a.hold)
         try:
             flush_notes(st)
         finally:
