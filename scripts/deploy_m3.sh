@@ -20,7 +20,7 @@ REPO_M3='$HOME/Projects/llm-ime'
 BASE_M3='$HOME/Library/Application Support/llm-ime'
 LABEL=com.llm-ime.engine
 SUMMARY=com.llm-ime.summary
-MODELS="r2-4bit qwen3-0.6b-base-4bit"  # what engine v02 loads
+MODELS="r6-4bitqwen3-0.6b-base-4bit"  # what engine v02 loads
 
 git diff --quiet HEAD -- ime scripts shell || { echo "commit ime/ scripts/ shell/ first: the engine is deployed from HEAD" >&2; exit 1; }
 
