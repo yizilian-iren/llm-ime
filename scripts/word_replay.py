@@ -101,7 +101,7 @@ def main():
     n_whole = sum(any(w == t for w, _s in whole.get(k, ())) for _c, k, t in misses)
     print(f"word misses n={len(misses)}: the keys are the whole pinyin of the commit, a word of ime/words.tsv: {n_whole}; "
           f"longer than a word: {len(misses) - n_whole}", flush=True)
-    firsts = {}
+    firsts, in5 = {}, {}
     for v in a.variants.split(","):
         wait_idle()
         name, _, opt = v.partition("@")  # base@word_top=30000,word_floor=2: engine options after @ (6B.7)
@@ -114,6 +114,15 @@ def main():
         print(f"{v:8} word misses n={len(misses)}: first {fixed}, top 5 {top5} | controls n={len(ok)}: "
               f"still first {kept}", flush=True)
         firsts[v] = [x[0] if x else "" for x in got]
+        in5[v] = [t in x for (_c, _k, t), x in zip(misses, got)]
+        if len(in5) > 1:  # counts against the first variant: who got into the top 5, who dropped out, by kind (6B.7)
+            base = in5[next(iter(in5))]
+            for kind, pick in (("whole word", lambda k, t: any(w == t for w, _s in whole.get(k, ()))),
+                               ("longer", lambda k, t: not any(w == t for w, _s in whole.get(k, ())))):
+                idx = [i for i, (_c, k, t) in enumerate(misses) if pick(k, t)]
+                print(f"         {kind} n={len(idx)}: top 5 in {sum(in5[v][i] for i in idx)} (first variant "
+                      f"{sum(base[i] for i in idx)}), gained {sum(in5[v][i] and not base[i] for i in idx)}, "
+                      f"lost {sum(base[i] and not in5[v][i] for i in idx)}", flush=True)
         del eng
     if a.show:
         for i, (c, k, t) in enumerate(misses):
