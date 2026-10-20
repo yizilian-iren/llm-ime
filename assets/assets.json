@@ -176,5 +176,23 @@
   "license": "the user's own",
   "session": "公开仓库 0.6",
   "added": "2026-10-19"
+ },
+ "lab4090:~/llm-ime-r6/runs/r6/final": {
+  "what": "r6 final checkpoint (1.2G, base for v02 since 6B.1); the weights stay on lab4090, M4 has them as models/r6-hf and models/r6-4bit",
+  "kind": "weights",
+  "source": "scripts/train.py on lab4090, data from scripts/gen_train.py (LCCC, wiki, public selected)",
+  "license": "Qwen3-0.6B-Base fine-tune (Apache-2.0 base)",
+  "session": "引擎 0.6",
+  "item": "6B.1",
+  "added": "2026-10-20"
+ },
+ "lab4090:~/llm-ime-r6/runs/r7/final": {
+  "what": "r7 final checkpoint (1.2G, targets cut at jieba word boundaries --align 0.9); dropped, not the base (6B.6); M4 has it as models/r7-hf and models/r7-4bit",
+  "kind": "weights",
+  "source": "scripts/train.py on lab4090, data from scripts/gen_train.py --align 0.9 (training data deleted 2026-10-20: private corpus, D-005)",
+  "license": "Qwen3-0.6B-Base fine-tune (Apache-2.0 base)",
+  "session": "引擎 0.6",
+  "item": "6B.6",
+  "added": "2026-10-20"
  }
 }
