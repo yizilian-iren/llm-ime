@@ -416,6 +416,30 @@ press(["esc"]); TypingLog.shared.flush(); wait(0.2)  // not composing: writes th
 check(records().count == logsBefore + 1, "English typing is not logged: \(records().count - logsBefore) new")
 try? FileManager.default.removeItem(atPath: logDir)
 
+// 6A.3: the candidate window never stays after the commit. A late answer for the committed keys ("more" comes
+// after a pause) shows nothing; a window left up by any path goes within 0.6 s; a key pressed with nothing
+// composed takes it away at once.
+Engine.quick = 0.05; Engine.full = 0.1; Engine.more = 0.4; Engine.moreExtra = []
+client.text = ""
+press(letters("ab")); wait(0.3)
+check(CandidatePanel.shared.isShown, "the window is up while typing")
+press(["space"])
+check(client.text == "F:ab" && !CandidatePanel.shared.isShown, "committed: the window is gone: '\(client.text)'")
+wait(0.8)
+check(!CandidatePanel.shared.isShown, "a late answer for the committed keys shows nothing")
+ctl.engineAnswered(id: 1, stage: "more", candidates: ["x"], segments: [])
+check(!CandidatePanel.shared.isShown, "an answer with an old id shows nothing")
+Engine.more = nil
+var stuck = CandidateModel(); stuck.candidates = ["x", "y"]
+CandidatePanel.shared.show(stuck, below: NSRect(x: 200, y: 400, width: 2, height: 18), fade: false) { false }
+check(CandidatePanel.shared.isShown, "a window shown for nothing is up at first")
+wait(0.7)
+check(!CandidatePanel.shared.isShown, "a window nobody wants goes within 0.6 s")
+CandidatePanel.shared.show(stuck, below: NSRect(x: 200, y: 400, width: 2, height: 18), fade: false)
+press(["esc"])
+check(!CandidatePanel.shared.isShown, "a key with nothing composed takes a left-over window away")
+Engine.quick = 0.05; Engine.full = 0.25
+
 unlink(sock)
 print(failed == 0 ? "keys: all passed" : "keys: \(failed) failed")
 exit(failed == 0 ? 0 : 1)

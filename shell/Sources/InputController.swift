@@ -56,6 +56,7 @@ final class InputController: IMKInputController {
         }
         guard event.type == .keyDown else { return false }
         shiftAlone = false
+        if keys.isEmpty && waiting == nil && CandidatePanel.shared.isShown { CandidatePanel.shared.hide() }  // 6A.3
         if event.keyCode != 51 { writeLogged() }
         if event.keyCode == 49, waiting == nil, !keys.isEmpty, comp?.seen == nil {  // what space was pressed on (5A.4)
             comp?.seen = (model.candidates.first, stage, answeredKeys)
@@ -350,8 +351,12 @@ final class InputController: IMKInputController {
         show(client, fade: false)
     }
 
+    /// Only while keys are being typed here (6A.3); the panel asks `wanted` again while it is up.
     private func show(_ client: IMKTextInput, fade: Bool) {
-        CandidatePanel.shared.show(model, below: cursorLine(client), fade: fade)
+        guard !keys.isEmpty else { return CandidatePanel.shared.hide() }
+        CandidatePanel.shared.show(model, below: cursorLine(client), fade: fade) { [weak self] in
+            !(self?.keys.isEmpty ?? true)
+        }
     }
 
     /// Before a key that is not ours: the selection, but the best whole candidate if that is only the start.
@@ -549,6 +554,11 @@ final class InputController: IMKInputController {
         writeLogged()
         CandidatePanel.shared.hide()
         super.deactivateServer(sender)
+    }
+
+    override func hidePalettes() {
+        CandidatePanel.shared.hide()
+        super.hidePalettes()
     }
 
     override func activateServer(_ sender: Any!) {

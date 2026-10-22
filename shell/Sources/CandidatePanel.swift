@@ -15,6 +15,9 @@ final class CandidatePanel: NSObject {
     private let view: CandidateView
     private let shadow: ShadowView
     private var shownFor: NSRect?  // the cursor line it is placed against
+    private var wanted: () -> Bool = { true }  // asked while shown: is there still a composition behind it (6A.3)
+    private var watchdog: Timer?
+    var isShown: Bool { panel.isVisible }
 
     var appearance: Appearance {
         get { Appearance(rawValue: UserDefaults.standard.string(forKey: "appearance") ?? "") ?? .system }
@@ -111,7 +114,9 @@ final class CandidatePanel: NSObject {
 
     /// Shows `model` under the cursor line `line` (screen coordinates, as IMK reports it).
     /// `fade`: the candidates were replaced by a better answer for the same keys (quick → full).
-    func show(_ model: CandidateModel, below line: NSRect, fade: Bool) {
+    /// `wanted`: the window is asked this every 0.4 s while it is up, and goes when the answer is no: a path that
+    /// forgot to hide it (6A.3: it stayed on the screen after the commit, over the emptied text field) ends there.
+    func show(_ model: CandidateModel, below line: NSRect, fade: Bool, wanted: @escaping () -> Bool = { true }) {
         if model.candidates.isEmpty {
             if !panel.isVisible { return }  // nothing to show yet: wait for the first answer
         }
@@ -139,11 +144,20 @@ final class CandidatePanel: NSObject {
             panel.orderFrontRegardless()
         }
         shownFor = line
+        self.wanted = wanted
+        if watchdog == nil {
+            watchdog = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+                if let self = self, !self.wanted() { self.hide() }
+            }
+        }
     }
 
     func hide() {
+        watchdog?.invalidate()
+        watchdog = nil
         panel.orderOut(nil)
         shownFor = nil
+        wanted = { true }
     }
 
     /// Left edge so the keys line up with the marked text; below the line, or above it near the bottom of
