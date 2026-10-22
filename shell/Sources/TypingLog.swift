@@ -99,12 +99,29 @@ struct Composition {
     var sent: [Int: (Int, Date)] = [:]     // request id -> (keys count, when sent)
     var seen: (String?, String, Int)?      // at the first space: the first candidate on screen, its stage ("": for
                                            // fewer keys, 5A.4) and how many keys it is for
+    var shell: [[Any]] = []                // per letter / delete key (6A.4): [keys count after it, ms from the key's own
+                                           // time to handle() (-1: replayed after a wait), ms in handle(), of it in
+                                           // setMarkedText, of it in showing the candidates]
+    var busy: [[Any]] = []                 // per answer shown (6A.4): [keys count, stage, ms engineAnswered took]
+    var flips: [[Any]] = []                // each time the first five on screen changed (6A.4): [ms, keys count, stage,
+                                           // 1: for the same keys as the ones before it (quick -> full), 1: the first changed]
+    var ctxMs: Double?                     // the first key: ms reading the text before the cursor from the app (6A.4)
+    private var shown: [String] = []       // the first five on screen, and how many keys they were for
+    private var shownKeys = 0
 
     init(app: String?) { self.app = app }
 
     var ms: Int { Int(Date().timeIntervalSince(start) * 1000) }
 
     mutating func event(_ e: Any...) { events.append([ms] + e) }
+
+    /// The candidates an answer put on screen (6A.4): counts a change of the first five, and of the first.
+    mutating func showing(_ candidates: [String], keys n: Int, stage: String) {
+        let top = Array(candidates.prefix(5))
+        defer { shown = top; shownKeys = n }
+        guard !shown.isEmpty, shown != top else { return }
+        flips.append([ms, n, stage, n == shownKeys ? 1 : 0, shown.first == top.first ? 0 : 1])
+    }
 
     mutating func answered(id: Int, stage: String) {
         guard let (n, at) = sent[id] else { return }
@@ -124,6 +141,10 @@ struct Composition {
             "picked": picked ?? NSNull(), "page": model.page, "text": text ?? NSNull(), "ms": ms,
         ]
         if let used = used { r["used"] = used }
+        if !shell.isEmpty { r["shell"] = shell }
+        if !busy.isEmpty { r["busy"] = busy }
+        if !flips.isEmpty { r["flips"] = flips }
+        if let c = ctxMs { r["ctx_ms"] = c }
         if let (first, stage, n) = seen {
             let s: [String: Any] = ["first": first ?? NSNull(), "stage": stage, "keys": n]
             r["seen"] = s

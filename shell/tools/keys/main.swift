@@ -143,8 +143,8 @@ func press(_ keys: [String]) {
         let code: UInt16 = ["space": 49, "delete": 51, "right": 124, "down": 125, "return": 36, "esc": 53][k] ?? 0
         let chars = ["space": " ", "delete": "\u{7f}", "right": "\u{f703}", "down": "\u{f701}", "return": "\r",
                      "esc": "\u{1b}"][k] ?? k
-        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
-                                 context: nil, characters: chars, charactersIgnoringModifiers: chars,
+        let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                 windowNumber: 0, context: nil, characters: chars, charactersIgnoringModifiers: chars,
                                  isARepeat: false, keyCode: code)!
         if !ctl.handle(e, client: client) {
             if code == 51 { if !client.text.isEmpty { client.text.removeLast() } } else if code != 36 { client.text += chars }
@@ -322,6 +322,18 @@ if rs.count == 4 {
     check(a["seen"] == nil, "no space, no seen: \(a)")
     check(c["keys"] as? String == "z" && c["text"] as? String == "z" && c["deleted_after"] as? Int == 0, "enter: \(c)")
     check(d["keys"] as? String == "q" && d["text"] is NSNull, "esc: \(d)")
+    // 6A.4: per key [keys after it, lag, in handle, in setMarkedText, in showing]; the first five changing; answers' time
+    let shell = (a["shell"] as? [[Any]]) ?? []
+    check(shell.map { $0[0] as? Int ?? -1 } == [1, 2, 3, 4] && shell.allSatisfy { e in
+        e.count == 5 && (e[1] as? Double ?? -1) >= 0 && (e[1] as? Double ?? 999) < 100 && (e[2] as? Double ?? -1) >= 0
+            && (e[3] as? Double ?? -1) >= 0 && (e[4] as? Double ?? -1) >= 0 }, "shell times: \(shell)")
+    check(a["ctx_ms"] is Double, "reading the text before the cursor: \(String(describing: a["ctx_ms"]))")
+    check(((b["shell"] as? [[Any]]) ?? []).map { $0[0] as? Int ?? -1 } == [1, 2, 3, 2, 3], "shell: a delete too: \(String(describing: b["shell"]))")
+    let flips = (a["flips"] as? [[Any]]) ?? []
+    check(flips.count == 1 && flips[0][1] as? Int == 4 && flips[0][2] as? String == "full" && flips[0][3] as? Int == 1
+          && flips[0][4] as? Int == 1, "quick -> full for the same keys: the first changed: \(flips)")
+    let busy = (a["busy"] as? [[Any]]) ?? []
+    check(busy.count >= 2 && busy.allSatisfy { $0.count == 3 && ($0[2] as? Double ?? -1) >= 0 }, "answers' time: \(busy)")
 }
 // The summary: one of each, as counted.
 let py = Process()
@@ -438,6 +450,37 @@ check(!CandidatePanel.shared.isShown, "a window nobody wants goes within 0.6 s")
 CandidatePanel.shared.show(stuck, below: NSRect(x: 200, y: 400, width: 2, height: 18), fade: false)
 press(["esc"])
 check(!CandidatePanel.shared.isShown, "a key with nothing composed takes a left-over window away")
+Engine.quick = 0.05; Engine.full = 0.25
+
+// 6A.4: a quick guess committed before the full answer: the full answer's first is logged against it, counts only.
+try? FileManager.default.removeItem(atPath: logDir)
+Engine.quick = 0.05; Engine.full = 0.8; Engine.more = nil
+client.text = ""
+press(letters("ab")); wait(0.2); press(["space"]); wait(0.7)  // waits 0.4 s, commits the quick guess; the full comes 0.2 s later
+check(client.text == "Q:ab", "full answer late -> the quick guess: \(client.text)")
+press(["esc"]); TypingLog.shared.flush(); wait(0.2)
+var late = records().last?["late_full"] as? [Int] ?? []
+check(late.count == 4 && late[0] > 50 && late[0] < 500 && late[1...] == [0, 0, 0], "late full answer: \(late)")
+// the next key comes before it: the record waits for it
+try? FileManager.default.removeItem(atPath: logDir)
+client.text = ""
+press(letters("ab")); wait(0.2); press(["space"]); wait(0.45)
+press(["c"]); wait(0.5)  // the full answer for ab came meanwhile
+press(["esc", "esc"]); TypingLog.shared.flush(); wait(0.2)
+var rl = records()
+late = rl.first { $0["keys"] as? String == "ab" }?["late_full"] as? [Int] ?? []
+check(rl.count == 2 && late.count == 4, "late full answer after the next key: \(rl.map { $0["late_full"] ?? "-" })")
+// it does not come: an empty list, written with the next key
+try? FileManager.default.removeItem(atPath: logDir)
+Engine.full = 3.0
+client.text = ""
+press(letters("ab")); wait(0.2); press(["space"]); wait(0.5)
+press(["esc"]); wait(1.5)  // the 1.5 s since the commit run out while the record waits for the next key
+press(["esc"]); TypingLog.shared.flush(); wait(0.2)
+rl = records()
+check(rl.count == 1 && (rl[0]["late_full"] as? [Any])?.count == 0, "no full answer: \(rl.map { $0["late_full"] ?? "-" })")
+wait(1.5)  // nothing is held for it any more
+try? FileManager.default.removeItem(atPath: logDir)
 Engine.quick = 0.05; Engine.full = 0.25
 
 unlink(sock)

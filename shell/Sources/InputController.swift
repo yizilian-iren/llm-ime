@@ -37,6 +37,12 @@ final class InputController: IMKInputController {
     private var retry: (keys: String, first: String, text: String, used: Int, at: Date)?  // keys given up on, and
                                              // what was committed since (5A.5)
     private var loggedTimer: Timer?
+    private var replaying = false            // handle() is replaying a queued key: its own time is not the key's lag (6A.4)
+    private var markedMs = 0.0               // what the last update() spent in setMarkedText / in showing (6A.4)
+    private var showMs = 0.0
+    private var lates: [Int: (shown: String, text: String, at: Date)] = [:]  // quick guesses committed before the full
+                                             // answer, by request id: the first they showed, what was committed (6A.4)
+    private var held: [Int: ([String: Any], Date)] = [:]  // their records, kept up to 1.5 s for that answer
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
@@ -55,6 +61,8 @@ final class InputController: IMKInputController {
             return flagsChanged(event, client)
         }
         guard event.type == .keyDown else { return false }
+        let started = ProcessInfo.processInfo.systemUptime  // 6A.4: the key's own time to here, and the time in here
+        let lag = replaying ? -1 : Self.tenths(started - event.timestamp)
         shiftAlone = false
         if keys.isEmpty && waiting == nil && CandidatePanel.shared.isShown { CandidatePanel.shared.hide() }  // 6A.3
         if event.keyCode != 51 { writeLogged() }
@@ -90,7 +98,7 @@ final class InputController: IMKInputController {
                 log(how: "deleted", text: nil)
                 reset(client)
             } else {
-                update(client)
+                update(client, keyed: (started, lag))
             }
             return true
         case 53:  // esc
@@ -136,13 +144,16 @@ final class InputController: IMKInputController {
                 }
                 if !composing && !Self.english && !EngineClient.shared.connected { return false }  // no engine: letters
                 if !composing && !Self.english {
+                    let read = ProcessInfo.processInfo.systemUptime
                     context = textBeforeCursor(client)
+                    let readMs = Self.tenths(ProcessInfo.processInfo.systemUptime - read)
                     let app = client.bundleIdentifier()
                     comp = TypingLog.shared.logs(app: app) ? Composition(app: app) : nil
+                    comp?.ctxMs = readMs
                 }
                 keys.append(Character(c))
                 comp?.event(String(c))
-                update(client)
+                update(client, keyed: (started, lag))
                 return true
             }
             if composing, let n = Int(chars), (1...CandidateModel.pageSize).contains(n) {
@@ -228,7 +239,9 @@ final class InputController: IMKInputController {
             let e = rest.removeFirst()
             noWaiting = first
             first = false
+            replaying = true
             let handled = handle(e, client: client)
+            replaying = false
             noWaiting = false
             if !handled, let cs = e.characters { insert(cs, client) }  // what the app would have typed
             if waiting != nil {
@@ -263,6 +276,16 @@ final class InputController: IMKInputController {
 
     // MARK: composing
 
+    /// Milliseconds with one decimal.
+    private static func tenths(_ seconds: TimeInterval) -> Double { (seconds * 10_000).rounded() / 10 }
+
+    /// A key that changed the keys: update(), and what it cost the main thread (6A.4).
+    private func update(_ client: IMKTextInput, keyed: (at: TimeInterval, lag: Double)) {
+        update(client)
+        comp?.shell.append([keys.count, keyed.lag, Self.tenths(ProcessInfo.processInfo.systemUptime - keyed.at),
+                            markedMs, showMs])
+    }
+
     private func update(_ client: IMKTextInput) {
         // A thin underline only (user: 「不出这个蓝色的」): a plain string, or IMK's raw-text style, has no underline of
         // its own, and apps drew their default (a thick line, on blue in Chromium-based ones). The line's color is the
@@ -271,8 +294,11 @@ final class InputController: IMKInputController {
         let marked = NSAttributedString(string: keys, attributes: [
             .underlineStyle: NSUnderlineStyle.single.rawValue, .underlineColor: CandidatePanel.shared.accent,
             .markedClauseSegment: 0])
+        let marking = ProcessInfo.processInfo.systemUptime
         client.setMarkedText(marked, selectionRange: NSRange(location: keys.utf16.count, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
+        markedMs = Self.tenths(ProcessInfo.processInfo.systemUptime - marking)
+        showMs = 0
         wantNextPage = false
         picked = false
         if englishKeys {
@@ -296,14 +322,20 @@ final class InputController: IMKInputController {
         comp?.sent[requestId] = (keys.count, Date())
         stage = ""  // the candidates shown are for the keys before this one, until its answer comes (5A.4)
         if model.candidates.isEmpty { return }  // the panel appears with the first answer
+        let showing = ProcessInfo.processInfo.systemUptime
         show(client, fade: false)
+        showMs = Self.tenths(ProcessInfo.processInfo.systemUptime - showing)
     }
 
     /// The engine answers each key with stage "quick", then "full" (five), then after a pause "more": the full
     /// answer's five followed by further candidates, which only add pages (the page on screen stays as it is),
     /// and after those the candidates for the start of the keys (4A.10), so the pages do not run out.
     func engineAnswered(id: Int, stage: String, candidates: [String], segments: [(String, Int)] = []) {
+        if stage == "full" { lateFull(id, candidates) }
         guard id == requestId, !keys.isEmpty, let client = currentClient else { return }
+        let started = ProcessInfo.processInfo.systemUptime
+        let n = keys.count
+        defer { comp?.busy.append([n, stage, Self.tenths(ProcessInfo.processInfo.systemUptime - started)]) }  // 6A.4
         if stage == "english" {  // the English of the keys read as pinyin, merged into the spelling's (6B.2)
             guard englishKeys, !candidates.isEmpty else { return }
             model.candidates = English.candidates(keys, word: spelled.word, guesses: spelled.guesses,
@@ -327,6 +359,7 @@ final class InputController: IMKInputController {
             return
         }
         let fade = stage == "full" && self.stage == "quick" && !model.candidates.isEmpty
+        comp?.showing(candidates, keys: keys.count, stage: stage)
         self.stage = stage
         model.candidates = candidates
         segmentEnds = []
@@ -409,6 +442,11 @@ final class InputController: IMKInputController {
             retry = nil
         }
         pieces = nil
+        if picked != nil, stage == "quick", requestId != 0, let first = model.candidates.first {  // the full answer may
+            let id = requestId                                                                  // still come (6A.4)
+            lates[id] = (first, text, Date())
+            Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in self?.lateFull(id, nil) }
+        }
         log(how: how, picked: picked, text: text, learns: learns)
         insert(text, client)
         if text != keys { EngineClient.shared.commit(text) }
@@ -451,8 +489,9 @@ final class InputController: IMKInputController {
                      learns: [(String, String, String)] = []) {
         guard let comp = comp else { return }
         writeLogged()
-        logged = (comp.record(keys: keys, model: model, stage: stage, how: how, picked: picked, text: text, used: used),
-                  Date(), learns)
+        var r = comp.record(keys: keys, model: model, stage: stage, how: how, picked: picked, text: text, used: used)
+        if lates[requestId] != nil { r["late_id"] = requestId }
+        logged = (r, Date(), learns)
         loggedTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in self?.writeLogged() }
     }
 
@@ -470,7 +509,32 @@ final class InputController: IMKInputController {
         }
         logged = nil
         deletesAfter = 0
+        if let id = record["late_id"] as? Int, lates[id] != nil {
+            held[id] = (record, date)
+            return
+        }
+        record["late_id"] = nil
         TypingLog.shared.write(record, at: date)
+    }
+
+    /// The full answer to a quick guess that was committed (6A.4), or none when it did not come in time: how late it
+    /// came, whether its first is the one that was shown / committed, whether the committed one is among its first
+    /// five. Counts only, no text. Writes the record that waited for it.
+    private func lateFull(_ id: Int, _ candidates: [String]?) {
+        guard let l = lates.removeValue(forKey: id) else { return }
+        var v: [Any] = []  // none: it did not come
+        if let c = candidates {
+            v = [Int(Date().timeIntervalSince(l.at) * 1000), c.first == l.shown ? 1 : 0, c.first == l.text ? 1 : 0,
+                 c.prefix(5).contains(l.text) ? 1 : 0]
+        }
+        if let (held, date) = held.removeValue(forKey: id) {
+            var r = held
+            r["late_id"] = nil
+            r["late_full"] = v
+            TypingLog.shared.write(r, at: date)
+        } else if (logged?.0["late_id"] as? Int) == id {
+            logged!.0["late_full"] = v
+        }
     }
 
     // MARK: given up and typed again (5A.5)
@@ -602,6 +666,7 @@ final class InputController: IMKInputController {
     @objc func openLog(_ sender: Any?) { TypingLog.shared.openFolder() }
     @objc func deleteLog(_ sender: Any?) {
         logged = nil  // the last commit's record too
+        held = [:]
         TypingLog.shared.deleteAll()
         EngineClient.shared.forget()  // and the word list learned from them (5A.3)
     }
