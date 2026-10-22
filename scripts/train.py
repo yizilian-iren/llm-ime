@@ -13,6 +13,11 @@ renormalised. The mix model's input is rebuilt from the sample: its context toke
       --mix models/Qwen3-0.6B-Base --distill 1.0 --out runs/r4 --ckpt
   r4a2: --model runs/r4/final --ce 0.2 --lr 3e-5 (the plain loss at full weight pulled r4 back towards r2)
 
+Key teacher (--key-teacher, 7B.1): a KL term, weight --key-kl, to the base model after the context and the target so
+far, normalised over only the tokens the keys can still read there, less the engine's abbreviation costs
+(scripts/key_teacher.py): the plain loss alone made r6 sure of jige -> 几个 whatever the context.
+  .venv-train/bin/python scripts/train.py --model runs/r6/final --key-teacher models/Qwen3-0.6B-Base --key-kl 0.2 ...
+
 LoRA (--lora R, 6A.1: home4070's 4070 has ~5-6 GB left beside voice-tts): the model frozen in bf16, adapters of rank
 R on every linear layer of the blocks; saves the adapter (final) and the model with it merged in (final-merged, for
 the MLX conversion). Each log line has the peak GPU memory PyTorch allocated (mem_gb).
@@ -23,6 +28,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import time
 
 import numpy as np
@@ -32,6 +38,7 @@ import torch.utils.checkpoint
 from transformers import AutoModelForCausalLM
 
 CE_CHUNK = 2048  # target positions per lm_head call: 2048 x 151k fp32 logits are 1.2 GB (--ce-chunk)
+LABEL_SMOOTHING = 0.0  # --label-smoothing, training only (evaluate's valid stays plain)
 
 
 def load(path):
@@ -58,9 +65,10 @@ def concat(a, b):
             *(np.concatenate([x, y]) for x, y in zip(a[2:5], b[2:5])), a[5])
 
 
-def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None, key_weight=0.0):
+def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None, key_weight=0.0, rows=False):
     """mix_input: (newline token id, w with context, w without) to also build the mix model's input.
-    key_weight: interleave data's letters in the target span get this weight (0 = no loss on them)."""
+    key_weight: interleave data's letters in the target span get this weight (0 = no loss on them).
+    rows: also yield the rows' indices (for the key teacher's sets)."""
     ids, off, plen, cstart, cend, keyids = data
     lens = np.diff(off)
     order = rng.permutation(len(lens))
@@ -105,7 +113,55 @@ def batches(data, tokens_per_batch, rng, pad_id, ctx_weight=0.0, mix_input=None,
             batch = [torch.from_numpy(a) for a in (x, y, att, w)]
             if mix_input:
                 batch.append(_mix_batch(ids, off, plen, cstart, cend, g, pad_id, *mix_input))
+            if rows:
+                batch.append(g)
             yield batch
+
+
+KM = None  # the key teacher's KeyMask, in each worker of the pool
+
+
+def _km_init(tok_path):
+    global KM
+    from transformers import AutoTokenizer
+
+    from key_teacher import KeyMask
+
+    KM = KeyMask(AutoTokenizer.from_pretrained(tok_path))
+
+
+def _km_rows(rows):
+    """rows: (seq, plen) of a batch. The key teacher's terms over the batch's target positions in flattened order:
+    (positions with a term, for each set entry its index among those positions, token ids, costs)."""
+    pos, r, tids, costs, at = [], [], [], [], 0
+    for seq, p in rows:
+        for j, x in enumerate(KM.row(seq, p)):
+            if x is not None:
+                r.append(np.full(len(x[0]), len(pos), dtype=np.int64))
+                pos.append(at + j)
+                tids.append(x[0])
+                costs.append(x[1])
+        at += len(seq) - p
+    if not pos:
+        return None
+    return [torch.from_numpy(np.asarray(a)) for a in (pos, np.concatenate(r), np.concatenate(tids), np.concatenate(costs))]
+
+
+def with_key_teacher(gen, pool, data, depth=6):
+    """The batches of gen (made with rows=True), each with its key-teacher terms, worked out ahead in the pool."""
+    from collections import deque
+
+    ids, off, plen = data[0], data[1], data[2]
+    q = deque()
+    for b in gen:
+        *batch, g = b
+        q.append((batch, pool.apply_async(_km_rows, ([(ids[off[i] : off[i + 1]], int(plen[i])) for i in g],))))
+        if len(q) > depth:
+            batch, res = q.popleft()
+            yield batch + [res.get()]
+    while q:
+        batch, res = q.popleft()
+        yield batch + [res.get()]
 
 
 def _mix_batch(ids, off, plen, cstart, cend, g, pad_id, nl_id, w_ctx, w_empty):
@@ -137,7 +193,7 @@ def _mix_batch(ids, off, plen, cstart, cend, g, pad_id, nl_id, w_ctx, w_empty):
     return [torch.from_numpy(a) for a in (xb, attb, tmask, bmask, wpos)]
 
 
-def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos_id=None, ce=1.0):
+def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos_id=None, ce=1.0, kt=None, key_kl=0.0):
     # Only target positions go through lm_head: full-vocab logits for every token would be tens of GB.
     # Chunked so the (targets x 151k vocab) logits never exist all at once.
     # use_cache=False: else every layer keeps its keys and values, 1.9 GB at 16k tokens (6A.1)
@@ -152,6 +208,8 @@ def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos
         total = total + torch.utils.checkpoint.checkpoint(_ce_chunk, model.lm_head, h[i:j], tgt[i:j], w[i:j],
                                                           use_reentrant=False)
     loss = total / w.sum()
+    if key_kl:
+        return _key_teacher_loss(model, hs, loss, mix_batch, teachers[1], kt, key_kl)
     if not distill:
         return loss, None
     loss = ce * loss
@@ -175,8 +233,37 @@ def loss_fn(model, x, y, att, w, mix_batch=None, teachers=None, distill=0.0, eos
     return loss + distill * kl, kl
 
 
+def _key_teacher_loss(model, hs, loss, mix_batch, base, kt, key_kl):
+    """loss + key_kl * KL(key teacher || student), averaged over the target positions that have a term."""
+    if kt is None:
+        return loss, hs.new_zeros(())
+    xb, attb, tmask, bmask, _ = mix_batch
+    pos, r, tids, costs = kt
+    hs_t = hs[:, : tmask.shape[1]][tmask][pos]
+    with torch.no_grad():
+        hb = base.model(input_ids=xb, attention_mask=attb, use_cache=False).last_hidden_state[bmask][pos]
+    kl = 0.0
+    for i in range(0, len(pos), 512):
+        sel = (r >= i) & (r < i + 512)
+        ri, ti = r[sel] - i, tids[sel]
+        with torch.no_grad():
+            lb = base.lm_head(hb[i : i + 512]).float()
+            tl = torch.full_like(lb, -float("inf"))
+            tl[ri, ti] = lb[ri, ti] - costs[sel]
+            lq = tl.log_softmax(-1)[ri, ti]
+            del lb, tl
+        kl = kl + torch.utils.checkpoint.checkpoint(_key_kl_chunk, model.lm_head, hs_t[i : i + 512], ri, ti, lq,
+                                                    use_reentrant=False)
+    kl = kl / len(pos)
+    return loss + key_kl * kl, kl
+
+
+def _key_kl_chunk(head, h, ri, ti, lq):
+    return (lq.exp() * (lq - head(h).float().log_softmax(-1)[ri, ti])).sum()
+
+
 def _ce_chunk(head, h, t, w):
-    return (F.cross_entropy(head(h).float(), t, reduction="none") * w).sum()
+    return (F.cross_entropy(head(h).float(), t, reduction="none", label_smoothing=LABEL_SMOOTHING) * w).sum()
 
 
 def _kl_chunk(head, h, logq):
@@ -206,7 +293,7 @@ def write_progress(out, done, total, eta_s, note, status="running"):
 
 
 def main():
-    global CE_CHUNK
+    global CE_CHUNK, LABEL_SMOOTHING
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="models/Qwen3-0.6B-Base")
     ap.add_argument("--out", required=True)
@@ -235,8 +322,13 @@ def main():
                     "the user's commits does not forget the rest, 6A.2)")
     ap.add_argument("--replay-ratio", type=float, default=1.0, help="replayed rows per row of --data")
     ap.add_argument("--ce-chunk", type=int, default=CE_CHUNK, help="smaller: less memory for the logits (6A.1: 256)")
+    ap.add_argument("--key-teacher", default="", help="base model for the key teacher's KL term (7B.1)")
+    ap.add_argument("--key-kl", type=float, default=0.2, help="weight of the key teacher's KL term")
+    ap.add_argument("--key-workers", type=int, default=8, help="processes working out the key teacher's sets")
+    ap.add_argument("--label-smoothing", type=float, default=0.0,
+                    help="spread this much of each target's mass over the whole vocab (7B.1: is jige -> 几个 less sure?)")
     a = ap.parse_args()
-    CE_CHUNK = a.ce_chunk
+    CE_CHUNK, LABEL_SMOOTHING = a.ce_chunk, a.label_smoothing
     os.makedirs(a.out, exist_ok=True)
     dev = "cuda"
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -272,6 +364,19 @@ def main():
         nl = AutoTokenizer.from_pretrained(a.mix).encode("\n")
         assert len(nl) == 1, nl
         mix_input, distill = (nl[0], a.mix_weight, a.mix_weight_empty), a.distill
+    key_kl, pool = 0.0, None
+    if a.key_teacher:
+        from multiprocessing import get_context
+
+        from transformers import AutoTokenizer
+
+        assert not a.teacher, "--key-teacher and --teacher are not written to go together"
+        base = AutoModelForCausalLM.from_pretrained(a.key_teacher, dtype=torch.bfloat16, attn_implementation="sdpa")
+        teachers = [None, base.to(dev).eval().requires_grad_(False)]
+        nl = AutoTokenizer.from_pretrained(a.key_teacher).encode("\n")
+        mix_input, key_kl = (nl[0], 1.0, 1.0), a.key_kl
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        pool = get_context("spawn").Pool(a.key_workers, initializer=_km_init, initargs=(a.key_teacher,))
     train, valid = load(f"{a.data}/train.npz"), load(f"{a.data}/valid.npz")
     if a.replay:
         public = load(a.replay)
@@ -292,11 +397,16 @@ def main():
     step, t0, seen = 0, time.time(), 0
     print(f"step 0 valid {evaluate(model, valid, pad_id, dev):.4f}", flush=True)
     while step < steps:
-        for x, y, att, w, *mb in batches(train, a.tokens, rng, pad_id, a.ctx_weight, mix_input, a.key_weight):
+        gen = batches(train, a.tokens, rng, pad_id, a.ctx_weight, mix_input, a.key_weight, rows=bool(pool))
+        if pool:
+            gen = with_key_teacher(gen, pool, train)
+        for x, y, att, w, *mb in gen:
             x, y, att, w = x.to(dev), y.to(dev), att.to(dev), w.to(dev)
+            kt = mb[1] if pool else None
+            kt = [t.to(dev) for t in kt] if kt is not None else None
             mb = [t.to(dev) for t in mb[0]] if mb else None
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss, kl = loss_fn(model, x, y, att, w, mb, teachers, distill, pad_id, a.ce)
+                loss, kl = loss_fn(model, x, y, att, w, mb, teachers, distill, pad_id, a.ce, kt, key_kl)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
