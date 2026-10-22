@@ -37,7 +37,8 @@ class LLMEngine:
                  split_penalty=0.0, swap_penalty=0.0, swap_margin=8.0,
                  swap_retries=1, alt_bonus=0.0, single_weight=0.0, english=False, typo_penalty=0.0,
                  typo_rows=3, english_penalty=0.0, english_pinyin_penalty=0.0, idiom_bonus=0.0,
-                 word_top=0, word_slot=4, word_n=1):
+                 word_top=0, word_slot=4, word_n=1, overlap=True):
+        self.overlap = bool(int(overlap))  # the keys are read while the GPU runs a forward (5B.13); False: wait for each one
         self.model, self.tok = load(model)
         self.model_path = model  # for the service's log: the base or the weekly retrain's (6A.2)
         self.mix = _Cached(load(mix)[0]) if mix else None
@@ -350,8 +351,9 @@ class LLMEngine:
         return ok
 
     # --- model ----------------------------------------------------------------
-    def _prefill(self, prompt):
-        """Bring the batch-1 cache to `prompt`, reusing the longest common token prefix of the last one."""
+    def _prefill(self, prompt, wait=True):
+        """Bring the batch-1 cache to `prompt`, reusing the longest common token prefix of the last one.
+        wait=False: the forward is only started (the caller does other work, then uses _ctx_logits)."""
         ids = self.tok.encode(prompt)
         if ids == self._ids:
             return
@@ -367,7 +369,7 @@ class LLMEngine:
             for c in self._ctx_cache:
                 c.trim(c.offset - common)
         logits = self.model(mx.array(ids[common:])[None], cache=self._ctx_cache)[:, -1, :]
-        mx.eval(logits, [c.state for c in self._ctx_cache])
+        (mx.eval if wait else mx.async_eval)(logits, [c.state for c in self._ctx_cache])
         self._ids, self._ctx_logits = ids, logits
 
     def _fork_cache(self, idx, steps):
@@ -513,15 +515,17 @@ class LLMEngine:
         beam = beam or self.beam
         mix = bool(self.mix) and mix
         plain = context[-64:] if context.strip() else self.empty_prompt
+        # the forwards of the prefill run on the GPU while the keys are read below (5B.13)
         if self.keys_in_prompt:
-            self._prefill(fmt.prompt(context, prompt_keys or keys, self.order))
+            self._prefill(fmt.prompt(context, prompt_keys or keys, self.order), wait=not self.overlap)
         else:
-            self._prefill(plain)
+            self._prefill(plain, wait=not self.overlap)
         if mix:
-            self.mix.prefill(self.tok.encode(plain))
+            self.mix.prefill(self.tok.encode(plain), wait=not self.overlap)
         n = len(keys)
         feasible = self.feasible(keys, fixes)
         if not feasible[0]:
+            mx.eval(self._ctx_logits)  # leave no unfinished work behind
             return []
         edge_cache = {}
 
@@ -540,6 +544,8 @@ class LLMEngine:
                 edge_cache[p] = tuple(x[ok] for x in e) if len(e[0]) else e
             return edge_cache[p]
 
+        if not prefix and self.overlap:
+            edges_at(0)
         logits = self._ctx_logits
         mix_logits = self.mix.ctx_logits if mix else None
         mix_w = (self.mix_weight if context.strip() else self.mix_weight_empty) if mix else 0
@@ -655,9 +661,12 @@ class LLMEngine:
                 midx = mx.array([at[parents[i]] for i in rows])
                 mix_cache = self.mix.fork(midx, n + 2) if mix_cache is None else (self._reorder(mix_cache, midx) or mix_cache)
                 mix_logits = self.mix.model(mx.array([tids[i] for i in rows])[:, None], cache=mix_cache)[:, -1, :]
-                mx.eval(logits, mix_logits)
+                (mx.async_eval if self.overlap else mx.eval)(logits, mix_logits)
             else:
-                mx.eval(logits)
+                (mx.async_eval if self.overlap else mx.eval)(logits)
+            if self.overlap:
+                for p in {h[2] for h in nxt if h[2] < n and not h[5]}:  # the next step's edges, while the GPU works
+                    edges_at(p)
             mix_rows = rows
             self.stats["forward_ms"] += (time.perf_counter() - t0) * 1000
             self.stats["calls"] += 1
@@ -869,7 +878,7 @@ class _Cached:
     def __init__(self, model):
         self.model, self.ids, self.cache, self.ctx_logits = model, [], None, None
 
-    def prefill(self, ids):
+    def prefill(self, ids, wait=True):
         if ids == self.ids:
             return
         common = 0
@@ -884,7 +893,7 @@ class _Cached:
             for c in self.cache:
                 c.trim(c.offset - common)
         self.ctx_logits = self.model(mx.array(ids[common:])[None], cache=self.cache)[:, -1, :]
-        mx.eval(self.ctx_logits, [c.state for c in self.cache])
+        (mx.eval if wait else mx.async_eval)(self.ctx_logits, [c.state for c in self.cache])
         self.ids = ids
 
     def fork(self, idx, steps):
