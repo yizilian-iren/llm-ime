@@ -272,7 +272,9 @@ def _kl_chunk(head, h, logq):
 
 @torch.no_grad()
 def evaluate(model, data, pad_id, dev):
+    global LABEL_SMOOTHING
     model.eval()
+    ls, LABEL_SMOOTHING = LABEL_SMOOTHING, 0.0
     tot, n = 0.0, 0
     for x, y, att, w in batches(data, 16384, np.random.default_rng(0), pad_id):
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -281,6 +283,7 @@ def evaluate(model, data, pad_id, dev):
         tot += float(loss) * k
         n += k
     model.train()
+    LABEL_SMOOTHING = ls
     return tot / n
 
 
