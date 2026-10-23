@@ -381,7 +381,7 @@ class LLMEngine:
             c.keys = c.keys[idx]
             c.values = c.values[idx]
 
-    def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True, mix_steps=None):
+    def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True):
         """Candidates for `keys`, best first; their token paths are left in `self.paths` (text -> path).
 
         beam: overrides the beam width. mix: False skips the mixed-in model.
@@ -389,7 +389,6 @@ class LLMEngine:
           forward per model); for the quick first guess, the previous keystroke's best candidate minus its
           last token.
         stop: called between beam steps; when it returns True the search is dropped and None returned.
-        mix_steps: the mixed-in model scores only the first this many tokens of a hypothesis (None: all).
         eos: False finishes a hypothesis as soon as it has consumed all keys, without the extra step that
           scores the end of the sentence (fine-tuned models only; base models never score it).
         With swap_penalty, keys may also be read with two adjacent letters exchanged, and characters by EXTRA_READINGS
@@ -407,7 +406,7 @@ class LLMEngine:
             if len(page) >= k and all(_gb2312(t) for t in page[:k]):  # else page is short: the search comes next
                 return page[:k]
             self.paths = {}
-        found = self._search(context, keys, k, beam, mix, prefix, stop, eos, fixes=True, mix_steps=mix_steps)
+        found = self._search(context, keys, k, beam, mix, prefix, stop, eos, fixes=True)
         if found and self.keys_in_prompt:
             # a fixed reading of a text the typed keys also read as typed stays, and is no reason to search again
             found = [f if not f[3] or not self._reads(f[1], keys) else (*f[:3], ()) for f in found]
@@ -426,7 +425,7 @@ class LLMEngine:
                     # an extra reading (en for 嗯): the dictionary's (n) in the prompt, while the search still reads
                     # the keys as typed (swaps made) and keeps only what reads one; alt_bonus is in its scores
                     again = self._search(context, swapped, k, beam, mix, pre, stop, eos, fixes=False, alts=alt,
-                                         prompt_keys=_apply(keys, fix) if alt else None, mix_steps=mix_steps)
+                                         prompt_keys=_apply(keys, fix) if alt else None)
                     if again is None:
                         return None
                     found += [(score - cost, t, _typed_path(path, swaps), fix) for score, t, path, f in again if f or not alt]
@@ -508,7 +507,7 @@ class LLMEngine:
                 return False
         return len(keys) in ends
 
-    def _search(self, context, keys, k, beam, mix, prefix, stop, eos, fixes, alts=None, prompt_keys=None, mix_steps=None):
+    def _search(self, context, keys, k, beam, mix, prefix, stop, eos, fixes, alts=None, prompt_keys=None):
         """The beam search of convert: finished hypotheses (score, text, path, fixes to the keys) best first,
         or None when `stop` dropped it. `fixes`: readings that need fixes too (`alts`: extra readings only).
         The keys in the prompt are `prompt_keys`, by default `keys`."""
@@ -656,7 +655,7 @@ class LLMEngine:
             logits = self.model(mx.array(tids)[:, None], cache=cache)[:, -1, :]
             # the mixed-in model only for the beams with keys left: the others wait for the end-of-sentence score,
             # which is the first model's alone
-            rows = [i for i, h in enumerate(nxt) if h[2] < n or h[5]] if mix_w and (mix_steps is None or _step + 1 < mix_steps) else []
+            rows = [i for i, h in enumerate(nxt) if h[2] < n or h[5]] if mix_w else []
             if rows:
                 at = {a: i for i, a in enumerate(mix_rows)}
                 midx = mx.array([at[parents[i]] for i in rows])
