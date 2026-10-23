@@ -88,8 +88,12 @@ def main():
     ap.add_argument("--dir", default=typo_stats.DEFAULT_DIR)
     ap.add_argument("--n", type=int, default=150)
     ap.add_argument("--progress", default="/tmp/llmime-5b11/progress.jsonl")
+    ap.add_argument("--overlap", action="store_true", help="the settings are engine.overlap off / on instead (5B.13)")
     ap.add_argument("days", nargs="+")
     a = ap.parse_args()
+    if a.overlap:
+        SETTINGS.clear()
+        SETTINGS.update({"off": {**ON, "overlap": False}, "on": {**ON, "overlap": True}})
     start = newest_log(a.dir)
     comps = []
     for day in a.days:
