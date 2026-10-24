@@ -54,7 +54,7 @@ from ime import remote, userwords, zh_en  # noqa: E402
 from ime.session import Session  # noqa: E402
 
 DEFAULT_SOCK = os.path.expanduser("~/Library/Application Support/llm-ime/engine.sock")
-PASSES = os.path.join(os.path.dirname(DEFAULT_SOCK), "passes.json")  # {"two": bool}, kept over restarts (7D.2)
+PASSES = os.path.join(os.path.dirname(DEFAULT_SOCK), "passes.json")  # {"two": bool}, kept over restarts (7D.2); beside --sock
 CONTEXT_CHARS = 64
 
 
@@ -223,7 +223,8 @@ def main():
         eng = remote.RemoteEngine(eng, **cfg)
         log(f"remote engine at {cfg['host']}:{cfg.get('port', remote.DEFAULT_PORT)}")
     words = userwords.UserWords(eng, a.words) if a.words and hasattr(eng, "score") else None
-    server = Server(eng, k=a.k, more=a.more, words=words, two_pass=load_passes())
+    passes = os.path.join(os.path.dirname(a.sock), "passes.json")
+    server = Server(eng, k=a.k, more=a.more, words=words, two_pass=load_passes(passes), passes_path=passes)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # launchd stops it with SIGTERM: remove the socket
     s = listen(a.sock)
     log(f"listening on {a.sock}")
