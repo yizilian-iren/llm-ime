@@ -27,6 +27,8 @@ class Fake:
 
     def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True):
         self.calls.append((keys, k, beam, prefix))
+        if getattr(self, "fail", False):
+            raise RuntimeError("Cache thrashing")
         end = time.monotonic() + self.delay
         while time.monotonic() < end:
             if stop and stop():
@@ -113,6 +115,13 @@ check("a newer key stops the remote search", out is None and (time.monotonic() -
 time.sleep(0.1)
 check("and the remote drops it", far.stopped >= 2)
 far.delay = 0.0
+
+far.fail = True  # an error there: local, and local for backoff_s
+check("an error there: local", r.convert("", "ni") == ["near:ni"] and r.counts["errors"] == 1)
+check("then local without asking", r.convert("", "ni") == ["near:ni"] and r.counts["errors"] == 1)
+far.fail = False
+time.sleep(0.6)
+check("after backoff_s the remote again", r.convert("", "ni") == ["far:ni"])
 
 r.set_on(False)
 check("远程计算 off: local", r.convert("", "ni") == ["near:ni"])

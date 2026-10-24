@@ -282,8 +282,10 @@ class RemoteEngine:
                 self._until = time.monotonic() + self.backoff_s
                 log(f"remote slower than {ms} ms: local for {self.backoff_s:.0f} s")
             return None
-        if "error" in ans:
+        if "error" in ans:  # broken there (7E.1: MLX's CUDA graph cache): local for a while, as for a timeout
             self.counts["errors"] += 1
+            self._until = time.monotonic() + self.backoff_s
+            log(f"remote error ({ans['error']}): local for {self.backoff_s:.0f} s")
             return None
         return ans
 

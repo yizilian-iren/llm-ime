@@ -74,7 +74,7 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=%h/llm-ime/remote
-Environment=CUDA_HOME=%h/llm-ime/cuda-home MLX_CUDA_SDPA_CACHE_SIZE=8192 PYTHONUNBUFFERED=1
+Environment=CUDA_HOME=%h/llm-ime/cuda-home MLX_CUDA_SDPA_CACHE_SIZE=8192 MLX_CUDA_GRAPH_CACHE_SIZE=4096 MLX_ENABLE_CACHE_THRASHING_CHECK=0 PYTHONUNBUFFERED=1
 ExecStart=%h/llm-ime/.venv-mlx/bin/python -W ignore -m ime.remote serve --host $TS_IP --port $PORT
 Restart=always
 RestartSec=5
