@@ -137,6 +137,7 @@ AppDelegate.active = ctl
 EngineClient.shared.onResult = { id, stage, cands, segs, by in
     ctl.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs, by: by)
 }
+EngineClient.shared.onConnect = { ctl.engineConnected() }
 EngineClient.shared.start()
 
 func wait(_ s: Double) { RunLoop.main.run(until: Date(timeIntervalSinceNow: s)) }
@@ -531,6 +532,15 @@ check((deact?["keys"] as? Int ?? 0) >= 2 && deact?["ms"] is Int, "deactivate eve
 check(evs.contains { $0["ev"] as? String == "unmarked" }, "an app with nothing marked after the first key: \(evs)")
 check(records().allSatisfy { $0["ev"] == nil }, "events stay out of the day's jsonl")
 try? FileManager.default.removeItem(atPath: logDir)
+
+// 7A.1: keys typed while the engine was away are sent again when it connects (here: nothing answered yet)
+client.text = ""
+press(letters("xy")); ctl.engineConnected(); wait(0.5)
+press(["space"]); wait(0.1)
+check(client.text == "F:xy", "keys sent again on connect, answered: \(client.text)")
+ctl.engineConnected()  // nothing composed: nothing sent
+check(client.text == "F:xy", "no keys, no resend: \(client.text)")
+client.text = ""
 
 unlink(sock)
 // 7E.1: the menu's 远程计算 tells the engine, and stays off across connects (this tool's own defaults)

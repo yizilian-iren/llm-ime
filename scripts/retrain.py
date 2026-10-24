@@ -275,7 +275,8 @@ def deploy(run, work):
         raise Skip("the records it was trained on were deleted (删除全部记录): not deployed")
     name = f"personal-{run['day'].replace('-', '')}-4bit"
     sh(["rsync", "-a", "--delete", os.path.join(work, "new-4bit") + "/", f"{M3}:Projects/llm-ime/models/{name}/"])
-    engine_log = "$HOME/Library/Logs/llm-ime/engine.log"
+    push_remote(name, work)  # first: M3 uses the remote only while both run the same model; pushed after, it sat
+    engine_log = "$HOME/Library/Logs/llm-ime/engine.log"  # unused for 3 min after M3's restart (7A.1, 10-25 06:07)
     swap = f'cd "{M3_MODELS}" && prev=$(readlink personal-4bit || true) && ln -sfh {name} personal-4bit && echo "$prev"'
     prev = ssh(M3, swap).strip()
     ssh(M3, f"launchctl kickstart -k gui/$(id -u)/{LABEL}")
@@ -294,7 +295,6 @@ def deploy(run, work):
             '*) rm -rf "$d";; esac; done')
     run["deployed"] = name
     log(f"deployed {name} (before: {prev or 'the base'})")
-    push_remote(name, work)
 
 
 def push_remote(name, work):

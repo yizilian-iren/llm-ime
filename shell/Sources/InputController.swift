@@ -158,10 +158,9 @@ final class InputController: IMKInputController {
                     englishKeys = true
                     context = textBeforeCursor(client)
                 }
-                if !composing && !Self.english && !EngineClient.shared.connected {  // no engine: letters
-                    TypingLog.shared.event("key_noengine", app: activeApp)
-                    return false
-                }
+                if !composing && !Self.english && !EngineClient.shared.connected {  // 7A.1: the engine is away (it
+                    TypingLog.shared.event("key_noengine", app: activeApp)          // restarts for a few seconds): the
+                }                                                                   // keys show and are sent when it is back
                 if !composing && !Self.english {
                     let read = ProcessInfo.processInfo.systemUptime
                     context = textBeforeCursor(client)
@@ -303,6 +302,13 @@ final class InputController: IMKInputController {
         update(client)
         comp?.shell.append([keys.count, keyed.lag, Self.tenths(ProcessInfo.processInfo.systemUptime - keyed.at),
                             markedMs, showMs])
+    }
+
+    /// The engine connected: the keys typed while it was away (shown, never answered) are sent again (7A.1).
+    func engineConnected() {
+        guard !keys.isEmpty, stage == "" || !hasAnswer, let client = currentClient else { return }
+        TypingLog.shared.event("resent", app: activeApp, ["keys": keys.count])
+        update(client)
     }
 
     private func update(_ client: IMKTextInput) {

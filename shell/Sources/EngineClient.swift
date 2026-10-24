@@ -16,6 +16,9 @@ final class EngineClient {
     /// "more", candidates for the start of the keys and how many keys each uses (4A.10); otherwise none. by: where the
     /// engine computed it, "remote" (home4070) / "local", or nil without remote.json (7E.1).
     var onResult: ((Int, String, [String], [(String, Int)], String?) -> Void)?
+    /// Called on the main thread each time the engine connects (or reconnects after a restart): the keys typed while it
+    /// was away are sent again (7A.1).
+    var onConnect: (() -> Void)?
     private(set) var connected = false  // read on the main thread
 
     private let queue = DispatchQueue(label: "llm-ime.engine")
@@ -110,7 +113,7 @@ final class EngineClient {
         fd = s
         if !Self.remoteOn { send(["op": "remote", "on": false]) }  // queued behind this: fd is set
         send(["op": "passes", "two": Self.twoPasses])
-        DispatchQueue.main.async { self.connected = true }
+        DispatchQueue.main.async { self.connected = true; self.onConnect?() }
         Thread.detachNewThread { self.read(s) }
     }
 
