@@ -58,6 +58,12 @@ final class EngineClient {
         set { UserDefaults.standard.set(!newValue, forKey: "remoteOff"); shared.send(["op": "remote", "on": newValue]) }
     }
 
+    /// The menu's 两遍计算（先快后准） (7D.2): default off, one pass (quick only). Sent again on each connect.
+    static var twoPasses: Bool {
+        get { UserDefaults.standard.bool(forKey: "twoPasses") }
+        set { UserDefaults.standard.set(newValue, forKey: "twoPasses"); shared.send(["op": "passes", "two": newValue]) }
+    }
+
     /// Clears the engine's word list (删除全部记录).
     func forget() {
         send(["op": "forget"])
@@ -103,6 +109,7 @@ final class EngineClient {
         }
         fd = s
         if !Self.remoteOn { send(["op": "remote", "on": false]) }  // queued behind this: fd is set
+        send(["op": "passes", "two": Self.twoPasses])
         DispatchQueue.main.async { self.connected = true }
         Thread.detachNewThread { self.read(s) }
     }

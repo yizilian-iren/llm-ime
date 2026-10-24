@@ -657,6 +657,9 @@ final class InputController: IMKInputController {
         let remote = NSMenuItem(title: "远程计算", action: #selector(toggleRemote(_:)), keyEquivalent: "")  // 7E.1
         remote.state = EngineClient.remoteOn ? .on : .off
         menu.addItem(remote)
+        let passes = NSMenuItem(title: "两遍计算（先快后准）", action: #selector(togglePasses(_:)), keyEquivalent: "")  // 7D.2
+        passes.state = EngineClient.twoPasses ? .on : .off
+        menu.addItem(passes)
         menu.addItem(NSMenuItem(title: "打开记录文件夹", action: #selector(openLog(_:)), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "删除全部记录", action: #selector(deleteLog(_:)), keyEquivalent: ""))
         return menu
@@ -667,6 +670,7 @@ final class InputController: IMKInputController {
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "retrainPaused"), forKey: "retrainPaused")
     }
     @objc func toggleRemote(_ sender: Any?) { EngineClient.remoteOn.toggle() }
+    @objc func togglePasses(_ sender: Any?) { EngineClient.twoPasses.toggle() }
     @objc func openLog(_ sender: Any?) { TypingLog.shared.openFolder() }
     @objc func deleteLog(_ sender: Any?) {
         logged = nil  // the last commit's record too
