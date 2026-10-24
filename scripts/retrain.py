@@ -42,6 +42,7 @@ M3, GPU = "m3", "home4070"
 M3_BASE = "$HOME/Library/Application Support/llm-ime"  # as scripts/deploy_m3.sh
 M3_MODELS = "$HOME/Projects/llm-ime/models"
 M3_PY = "$HOME/Projects/llm-ime/.venv/bin/python"
+LOST_MAX = 120  # 30 s each: ssh to home4070 failing this long during training means the machine is gone
 GPU_DIR = "llm-ime"  # home4070: .venv-train, models/<base>-hf, data/replay/<base>.npz
 REMOTE_DIR = "llm-ime/remote"  # home4070: the remote engine (7E.1, scripts/install_remote4070.sh)
 LABEL = "com.llm-ime.engine"
@@ -162,7 +163,7 @@ def fetch(run, work):
 
 
 def gpu_idle():
-    out = ssh(GPU, "/usr/lib/wsl/lib/nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits")
+    out = ssh(GPU, "(nvidia-smi || /usr/lib/wsl/lib/nvidia-smi) --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits")
     util, used = (int(x) for x in out.split(","))
     return util <= GPU_IDLE[0] and used <= GPU_IDLE[1], f"GPU {util}%, {used} MiB"
 
@@ -201,11 +202,16 @@ def train(run, work, now):
                      "--out", "retrain-work/run"] + TRAIN_ARGS)
     ssh(GPU, f"cd {GPU_DIR} || exit 1; PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True nohup .venv-train/bin/python "
              f"retrain-work/code/scripts/train.py {args} > retrain-work/train.log 2>&1 < /dev/null & echo $! > retrain-work/pid")
+    lost = 0
     while True:  # ssh may drop; the training goes on
         time.sleep(30)
         try:
             alive = ssh(GPU, f"kill -0 $(cat {rw}/pid) 2>/dev/null && echo yes || echo no").strip() == "yes"
-        except subprocess.CalledProcessError:
+            lost = 0
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            lost += 1
+            if lost >= LOST_MAX:  # the machine is gone (off, reinstalled): not the lock held for ever
+                raise Wait(f"home4070 unreachable for {lost * 30 // 60} min while training")
             continue
         if not alive:
             break

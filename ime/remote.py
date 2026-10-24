@@ -197,7 +197,7 @@ class RemoteEngine:
 
     def _keep_connected(self):
         while True:
-            if self._sock is None:
+            if self._sock is None and self.on:  # off in the menu: no tries at all
                 try:
                     self._connect()
                 except OSError:
@@ -208,6 +208,10 @@ class RemoteEngine:
     def _connect(self):
         s = socket.create_connection((self.host, self.port), timeout=self.connect_s)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # a half-dead connection (the far end off) ends sooner
+        for name, val in (("TCP_KEEPIDLE", 30), ("TCP_KEEPALIVE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
+            if hasattr(socket, name):  # Linux: KEEPIDLE; macOS: KEEPALIVE (the idle time)
+                s.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), val)
         s.settimeout(None)
         try:
             _send(s, self._lock, {"op": "hello", "token": self.token})
