@@ -5,7 +5,7 @@
 serve (on home4070, MLX's CUDA backend, scripts/install_remote4070.sh): the same engine (ime.engine.load "v02", the
 same models) answers convert / segments / score over TCP, one JSON object per line both ways, on the Tailscale
 address only and only after a hello with the token:
-  -> {"op": "hello", "token": "..."}            <- {"op": "hello", "model": "r6-4bit"}  (the model's folder name)
+  -> {"op": "hello", "token": "..."}            <- {"op": "hello", "model": "r6-4bit"}  (model_name)
   -> {"id": 3, "op": "convert", "context": "", "keys": "nihao", "k": 5, "beam": null, "mix": true,
       "prefix": [[token, key end], ...] | null, "eos": true}
                                                 <- {"id": 3, "cands": [...] | null, "paths": {text: [[t, e], ...]}}
@@ -67,7 +67,7 @@ def _send(sock, lock, obj):
 class Service:
     def __init__(self, engine, token):
         self.engine, self.token = engine, token
-        self.model = os.path.basename(getattr(engine, "model_path", ""))
+        self.model = model_name(engine)
         self.cancelled = set()
         self.jobs = queue.Queue()
         threading.Thread(target=self._work, daemon=True).start()
@@ -218,7 +218,7 @@ class RemoteEngine:
         except (OSError, ValueError, StopIteration):  # refused (the token) or gone
             s.close()
             return
-        want = os.path.basename(getattr(self.local, "model_path", ""))
+        want = model_name(self.local)
         if hello.get("model") != want:
             s.close()
             if self._model != hello.get("model"):
@@ -340,6 +340,12 @@ class RemoteEngine:
                 _send(s, self._lock, {"op": "forget"})
             except OSError:
                 pass
+
+
+def model_name(engine):
+    """The folder name of the engine's model, through the personal-4bit link (personal-20261019-4bit): both sides
+    must run the very same weights."""
+    return os.path.basename(os.path.realpath(getattr(engine, "model_path", "")))
 
 
 def load_config(path=DEFAULT_CONFIG):
