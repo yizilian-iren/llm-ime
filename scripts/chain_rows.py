@@ -11,6 +11,9 @@ import json
 import os
 import sys
 import time
+import resource
+
+import mlx.core as mx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,6 +30,7 @@ def main():
     ap.add_argument("--rows", default="1,2,3,5")
     ap.add_argument("--every", default="0")
     a = ap.parse_args()
+    mx.set_cache_limit(512 << 20)  # the run's many shapes would fill the buffer cache (17 GB at --n 100)
     eng = engines.load("v02")
     items = [json.loads(line) for line in open("data/private/eval.jsonl")]
     items = [r for r in items if r["src"] == "public"][: a.n]
@@ -48,7 +52,9 @@ def main():
                     out = s._quick(r["context"], keys[:j])
                     if j >= 10:
                         ms[form, rows, every].append((time.perf_counter() - t0) * 1000)
+                mx.clear_cache()
                 ok[form, rows, every].append(bool(out) and out[0] == r["target"])
+    print(f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**30:.1f} GB")
     for form in a.forms.split(","):
         for rows, every in variants:
             o, m = ok[form, rows, every], sorted(ms[form, rows, every])
