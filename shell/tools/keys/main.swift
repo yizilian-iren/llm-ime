@@ -514,6 +514,24 @@ press(["esc"])
 Engine.quick = 0.05; Engine.full = 0.25; Engine.more = nil; Engine.moreExtra = []
 UserDefaults.standard.set(true, forKey: "twoPasses")
 
+// 7A.1: activation and key events: times and counts, in their own file, no text
+try? FileManager.default.removeItem(atPath: logDir)
+Engine.more = nil
+ctl.activateServer(client)
+press(letters("ab")); wait(0.3)
+press(["esc"])
+ctl.deactivateServer(client)
+TypingLog.shared.flush(); wait(0.2)
+let evFile = ((try? FileManager.default.contentsOfDirectory(atPath: logDir)) ?? []).first { $0.hasSuffix(".events") }
+let evs = ((try? String(contentsOfFile: logDir + "/" + (evFile ?? "-"), encoding: .utf8)) ?? "").split(separator: "\n")
+    .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+check(evs.first?["ev"] as? String == "activate" && evs.first?["app"] as? String == "test", "activate event: \(evs)")
+let deact = evs.first { $0["ev"] as? String == "deactivate" }
+check((deact?["keys"] as? Int ?? 0) >= 2 && deact?["ms"] is Int, "deactivate event with its key count: \(evs)")
+check(evs.contains { $0["ev"] as? String == "unmarked" }, "an app with nothing marked after the first key: \(evs)")
+check(records().allSatisfy { $0["ev"] == nil }, "events stay out of the day's jsonl")
+try? FileManager.default.removeItem(atPath: logDir)
+
 unlink(sock)
 // 7E.1: the menu's 远程计算 tells the engine, and stays off across connects (this tool's own defaults)
 let wasOn = EngineClient.remoteOn

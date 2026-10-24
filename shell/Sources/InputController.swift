@@ -55,8 +55,24 @@ final class InputController: IMKInputController {
         Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged]).rawValue)
     }
 
+    // 7A.1: what this controller saw since its last activateServer, for the events file (times and counts only)
+    private var activeApp: String?
+    private var activatedAt: TimeInterval?
+    private var keysSinceActivate = 0
+    private var noActivateLogged = false
+
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard let event = event, let client = sender as? IMKTextInput else { return false }
+        guard let event = event, let client = sender as? IMKTextInput else {
+            if event?.type == .keyDown { TypingLog.shared.event("key_noclient", app: activeApp) }
+            return false
+        }
+        if event.type == .keyDown {
+            keysSinceActivate += 1
+            if activatedAt == nil && !noActivateLogged {  // a key reached us that never activated this controller
+                noActivateLogged = true
+                TypingLog.shared.event("key_unactivated", app: nil)
+            }
+        }
         if event.type == .flagsChanged {
             return flagsChanged(event, client)
         }
@@ -142,7 +158,10 @@ final class InputController: IMKInputController {
                     englishKeys = true
                     context = textBeforeCursor(client)
                 }
-                if !composing && !Self.english && !EngineClient.shared.connected { return false }  // no engine: letters
+                if !composing && !Self.english && !EngineClient.shared.connected {  // no engine: letters
+                    TypingLog.shared.event("key_noengine", app: activeApp)
+                    return false
+                }
                 if !composing && !Self.english {
                     let read = ProcessInfo.processInfo.systemUptime
                     context = textBeforeCursor(client)
@@ -298,6 +317,14 @@ final class InputController: IMKInputController {
         client.setMarkedText(marked, selectionRange: NSRange(location: keys.utf16.count, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
         markedMs = Self.tenths(ProcessInfo.processInfo.systemUptime - marking)
+        if keys.count == 1 {  // 7A.1: after the first key, off the key path: is anything marked in the app?
+            let app = activeApp
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self = self, !self.keys.isEmpty, let c = self.currentClient else { return }
+                let m = c.markedRange()
+                if m.location == NSNotFound || m.length == 0 { TypingLog.shared.event("unmarked", app: app) }
+            }
+        }
         showMs = 0
         wantNextPage = false
         picked = false
@@ -611,6 +638,11 @@ final class InputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
+        if let at = activatedAt {
+            TypingLog.shared.event("deactivate", app: activeApp, ["keys": keysSinceActivate,
+                "ms": Int((ProcessInfo.processInfo.systemUptime - at) * 1000)])
+        }
+        activatedAt = nil
         if let client = sender as? IMKTextInput {
             stopWaiting(client)
             if !keys.isEmpty { commit(keys, client, how: "away") }
@@ -628,6 +660,11 @@ final class InputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         AppDelegate.active = self
+        activeApp = (sender as? IMKTextInput)?.bundleIdentifier()
+        activatedAt = ProcessInfo.processInfo.systemUptime
+        keysSinceActivate = 0
+        noActivateLogged = false
+        TypingLog.shared.event("activate", app: activeApp)
     }
 
     override func menu() -> NSMenu! {

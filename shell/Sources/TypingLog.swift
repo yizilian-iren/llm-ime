@@ -45,7 +45,7 @@ final class TypingLog {
         return f
     }()
 
-    func write(_ record: [String: Any], at date: Date) {
+    func write(_ record: [String: Any], at date: Date, file prefix: String = "", ext: String = "jsonl") {
         queue.async {
             var r = record
             r["t"] = self.stamp.string(from: date)
@@ -53,7 +53,7 @@ final class TypingLog {
             else { return }
             data.append(0x0a)
             let dir = Self.directory
-            let url = dir.appendingPathComponent(self.day.string(from: date) + ".jsonl")
+            let url = dir.appendingPathComponent(prefix + self.day.string(from: date) + "." + ext)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                      attributes: [.posixPermissions: 0o700])
             if !FileManager.default.fileExists(atPath: url.path) {
@@ -64,6 +64,17 @@ final class TypingLog {
             _ = try? h.seekToEnd()
             try? h.write(contentsOf: data)
         }
+    }
+
+    /// One activation / key-receiving event (7A.1): a kind, the app's bundle id and counts and times only, never text.
+    /// In `events-DAY.events` beside the day's log (not .jsonl: the scripts that read days leave it alone).
+    /// Same pause and password-manager exclusions as the log. Called with the clock already read; no IMK call here.
+    func event(_ kind: String, app: String?, _ fields: [String: Any] = [:]) {
+        guard logs(app: app) else { return }
+        var r = fields
+        r["ev"] = kind
+        if let app = app { r["app"] = app }
+        write(r, at: Date(), file: "events-", ext: "events")
     }
 
     /// Waits for the lines written so far (tests).
