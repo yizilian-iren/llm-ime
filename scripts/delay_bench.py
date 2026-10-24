@@ -121,7 +121,7 @@ def main():
         eng = engines.load("v02")
         eng.convert("", "nihao", k=1)
         rec, spans = Rec(), stoppable(eng)
-        ses = Session(eng, rec, k=5, more=20, segments=True)
+        ses = Session(eng, rec, k=5, more=20, segments=True, two_pass=True)
         os.makedirs(os.path.dirname(a.progress), exist_ok=True)
         with open(a.progress, "a", encoding="utf-8") as f:
             for i in todo:

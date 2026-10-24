@@ -9,6 +9,7 @@ English of whole pinyin only. Exits 1 when a check fails.
 
 import os
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,7 +46,7 @@ def main():
         if stage == "english":
             english[keys] = cands
 
-    ses = Session(eng, on_result, full_delay=0.05)
+    ses = Session(eng, on_result, full_delay=0.05, two_pass=True)
 
     def at(keys, stage):
         return next((t for t, k, s in events if (k, s) == (keys, stage)), None)
@@ -95,6 +96,38 @@ def main():
     check(english.get("pingguo", [""])[0] == "apple" and english.get("neccesary") == [],
           f"pingguo -> apple first, neccesary (not pinyin) none: {english}")
     ses.close()
+
+    # 7D.2: one pass (the default): the quick guess only, then the pages behind it after a pause
+    eng2, events2 = Engine(), []
+    one = Session(eng2, lambda c, keys, cands, stage, **kw: events2.append((keys, stage, cands)), k=5, more=20,
+                  more_delay=0.03)
+    one.type("", "ab")
+    one.hurry()
+    time.sleep(0.02)
+    one.type("", "abc")
+    time.sleep(0.2)
+    check([(k, st) for k, st, _ in events2] == [("ab", "quick"), ("abc", "quick"), ("abc", "more")],
+          f"one pass: quick, and the pages after a pause, no full {[(k, st) for k, st, _ in events2]}")
+    check(not any(c[1] == 5 for c in eng2.calls) and ("abc", 20) in eng2.calls, f"one pass: no k=5 search {eng2.calls}")
+    one.set_two_pass(True)
+    events2.clear()
+    one.type("", "xy")
+    time.sleep(0.2)
+    check([st for _, st, _ in events2][:2] == ["quick", "full"], "set_two_pass(True): the full answer comes again")
+    one.close()
+
+    from ime import server
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "passes.json")
+    check(server.load_passes(path) is False, "passes: false when nothing is kept")
+    sent = []
+    srv = server.Server(Engine(), passes_path=path)
+    conn = type("C", (), {"send": lambda self, o: sent.append(o)})()
+    srv.handle(conn, {"op": "passes", "id": 1, "two": True})
+    srv.handle(conn, {"op": "passes", "id": 2})
+    check(sent == [{"id": 1, "op": "passes", "two": True}, {"id": 2, "op": "passes", "two": True}]
+          and server.load_passes(path) is True, f"passes op: set, read, kept over restarts {sent}")
+    srv.session.close()
     sys.exit(1 if bad else 0)
 
 

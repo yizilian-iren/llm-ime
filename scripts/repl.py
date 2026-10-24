@@ -31,7 +31,7 @@ def main():
         engs.append(engines.load(name))
         print(f"loaded {name} in {time.time() - t:.1f}s")
     results = queue.Queue()
-    ses = Session(engs[0], lambda c, k, cands, stage: results.put((time.perf_counter(), cands, stage)))
+    ses = Session(engs[0], lambda c, k, cands, stage: results.put((time.perf_counter(), cands, stage)), two_pass=True)
     ctx, last = "", []
     while True:
         try:

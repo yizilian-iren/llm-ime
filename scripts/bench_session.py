@@ -58,7 +58,7 @@ def main():
     quick = None
     if a.quick_beam:
         quick = dict(k=3, beam=a.quick_beam, mix=True, eos=False)
-    ses = Session(eng, rec, quick=quick)
+    ses = Session(eng, rec, quick=quick, two_pass=True)
     for r in items:
         r["initials"] = r[a.form]  # the rest of the script reads "initials"
     ses.type(items[0]["context"], items[0]["initials"])  # warm up

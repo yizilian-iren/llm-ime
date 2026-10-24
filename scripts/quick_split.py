@@ -142,7 +142,7 @@ def run_paced(a):
                 with cond:
                     cond.notify_all()
 
-    s = Session(eng, on_result, k=5)
+    s = Session(eng, on_result, k=5, two_pass=True)
     q0 = s._quick
 
     def timed_quick(ctx, keys):

@@ -24,6 +24,10 @@ do not starve each other. The worker takes each tag's newest request in turn and
      search was: 4A.5). With `segments`, it also carries the engine's candidates for the start of the keys
      (engine.segments: [(text, keys used)], 4A.10) as `segments=`, leaving out those that use all the keys
      and are already among the whole candidates.
+One pass (`two_pass` False, the default since 7D.2, D-050): only the quick guess is computed for each key, and space
+uses what is on screen, nothing to wait for; the full answer is not computed at all. The pause's "more" still
+comes, but after the quick guess's own candidates (the first page does not change), and a word the keys are the
+whole pinyin of (6B.7) that is not among them comes right after them. `set_two_pass(True)` goes back to the two passes.
 With `words` (ime.userwords.UserWords), the full answer is reranked by the user's words and their pieces for the
 start of the keys come first (5A.3); the quick guess puts words learned for all of the keys first (liji 力积 shows
 while typing), without the model call of the rerank (5B.10: that cost M3 54 -> 75 ms on the keys it applied to).
@@ -44,7 +48,7 @@ from ime import zh_en
 
 class Session:
     def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False,
-                 words=None, prefix_keys=10, full_delay=0.0):
+                 words=None, prefix_keys=10, full_delay=0.0, two_pass=False):
         self.engine, self.on_result, self.k, self.words = engine, on_result, k, words
         self.more, self.more_delay = more, more_delay
         self.segments = segments and hasattr(engine, "segments")
@@ -52,6 +56,7 @@ class Session:
         self.quick = quick or dict(k=3, beam=3, mix=True, eos=False)  # convert() options of the quick guess
         self.prefix_keys = prefix_keys  # keys this long or longer: the quick guess starts from the last best
         self.full_delay = full_delay
+        self.two_pass = two_pass
         self._cond = threading.Condition()
         self._pending = {}  # tag -> (context, keys), the newest request of each; first come, first served
         self._hurry = set()  # tags whose latest request's full search is wanted now
@@ -65,6 +70,9 @@ class Session:
             self._pending[tag] = (context, keys, english)  # an older one of this tag keeps its place in line
             self._hurry.discard(tag)
             self._cond.notify()
+
+    def set_two_pass(self, two):
+        self.two_pass = bool(two)  # read at the next key
 
     def hurry(self, tag=None):
         """The full answer to `tag`'s latest request is waited for (space): no `full_delay` before it."""
@@ -106,6 +114,9 @@ class Session:
             return
         quick = self._quick(context, keys)
         send(context, keys, quick, "quick")
+        if not self.two_pass:
+            self._more_after_quick(context, keys, quick, tag, send)
+            return
         with self._cond:
             self._cond.wait_for(lambda: self._pending or self._closed or tag in self._hurry, timeout=self.full_delay)
             self._hurry.discard(tag)
@@ -131,6 +142,39 @@ class Session:
             if extra is None:
                 return
             whole = full + [c for c in extra if c not in full]
+        if not self.segments:
+            send(context, keys, whole, "more")
+            return
+        if self._busy():
+            return
+        segs = self.engine.segments(context, keys)
+        if self.words:
+            segs = self.words.segments(keys, segs)
+        segs = [(t, e) for t, e in segs if e < len(keys) or t not in whole]
+        send(context, keys, whole, "more", segments=segs)
+
+    def _more_after_quick(self, context, keys, quick, tag, send):
+        """One pass: after a pause the pages behind the quick guess's own candidates (the search for `more`
+        candidates), the whole-word candidate right after them; sent as "more", with the segments if wanted."""
+        if not quick or not ((self.more and self.more > self.k) or self.segments):
+            return
+        with self._cond:
+            self._cond.wait_for(lambda: self._pending or self._closed, timeout=self.more_delay)
+            if self._pending or self._closed:
+                return
+        whole = quick
+        if self.more and self.more > self.k:
+            extra = self._convert(context, keys, k=self.more, stop=self._busy)
+            if extra is None:
+                return
+            rest = [c for c in extra if c not in quick]
+            sylls = getattr(self.engine, "words", None)
+            named = {w for w, _s in sylls.get(keys, ())} if sylls and hasattr(sylls, "get") else set()
+            word = next((c for c in rest if c in named), None) if named and not any(c in named for c in quick) else None
+            if word:
+                rest.remove(word)
+                rest.insert(0, word)
+            whole = quick + rest
         if not self.segments:
             send(context, keys, whole, "more")
             return

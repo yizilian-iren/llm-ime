@@ -5,7 +5,8 @@
 Loads the engine, then listens on a Unix socket (default ~/Library/Application Support/llm-ime/engine.sock).
 One JSON object per line, both ways:
   -> {"id": 7, "context": "下班以后，", "keys": "jintian"}      (op "type" may be left out)
-  <- {"id": 7, "stage": "quick", "candidates": [...]}           then the same id with stage "full" (--k of them),
+  <- {"id": 7, "stage": "quick", "candidates": [...]}           then, with two passes only (op "passes"), the same id
+                                                                 with stage "full" (--k of them),
                                                                  and after a pause "more" (--more: full's first),
                                                                  with "segments": [["今天", 6], ...]: candidates for
                                                                  the start of the keys and how many keys each uses
@@ -17,6 +18,10 @@ One JSON object per line, both ways:
                                                                  and deletes the personal model (6A.2)
   -> {"op": "hurry"}                                            the full answer to this connection's latest keys is
                                                                  waited for (space): start it now (ime.session)
+  -> {"op": "passes", "two": true}                              two passes (quick, then the full answer) or, "two":
+                                                                 false (default, 7D.2), the quick guess only; kept in
+                                                                 passes.json beside the socket. Without "two": just
+                                                                 <- {"id": 3, "op": "passes", "two": false}
   -> {"op": "import", "path": "/x/words.tsv", "count": 1, "id": 9}   adds `keys<TAB>word[<TAB>count]` lines
                                                                  <- {"id": 9, "imported": n}
   -> {"op": "ping", "id": 8}   <- {"id": 8, "op": "pong"}
@@ -49,7 +54,16 @@ from ime import remote, userwords, zh_en  # noqa: E402
 from ime.session import Session  # noqa: E402
 
 DEFAULT_SOCK = os.path.expanduser("~/Library/Application Support/llm-ime/engine.sock")
+PASSES = os.path.join(os.path.dirname(DEFAULT_SOCK), "passes.json")  # {"two": bool}, kept over restarts (7D.2)
 CONTEXT_CHARS = 64
+
+
+def load_passes(path=PASSES):
+    try:
+        with open(path) as f:
+            return bool(json.load(f).get("two"))
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def log(msg):
@@ -79,12 +93,13 @@ class Conn:
 
 
 class Server:
-    def __init__(self, engine, k=5, more=None, words=None):
+    def __init__(self, engine, k=5, more=None, words=None, two_pass=False, passes_path=PASSES):
+        self.passes_path = passes_path
         self.committed = ""  # recent committed text, in memory only
         self.words = words
         self.personal = getattr(engine, "model_path", "") == engines.PERSONAL
         self.session = Session(engine, self._on_result, k=k, more=more, segments=True, words=words,
-                               on_error=lambda: log_error("conversion"))
+                               on_error=lambda: log_error("conversion"), two_pass=two_pass)
 
     def _on_result(self, context, keys, cands, stage, tag, segments=None):
         latest = tag.latest
@@ -109,6 +124,16 @@ class Server:
             self.session.type(context, keys, tag=conn, english=msg.get("mode") == "english")
         elif op == "hurry":
             self.session.hurry(tag=conn)
+        elif op == "passes":
+            if "two" in msg:
+                two = bool(msg["two"])
+                self.session.set_two_pass(two)
+                try:
+                    with open(self.passes_path, "w") as f:
+                        json.dump({"two": two}, f)
+                except OSError:
+                    log_error("passes")
+            conn.send({"id": msg.get("id"), "op": "passes", "two": self.session.two_pass})
         elif op == "commit":
             self.committed = (self.committed + msg.get("text", ""))[-CONTEXT_CHARS:]
         elif op == "learn" and self.words:
@@ -198,7 +223,7 @@ def main():
         eng = remote.RemoteEngine(eng, **cfg)
         log(f"remote engine at {cfg['host']}:{cfg.get('port', remote.DEFAULT_PORT)}")
     words = userwords.UserWords(eng, a.words) if a.words and hasattr(eng, "score") else None
-    server = Server(eng, k=a.k, more=a.more, words=words)
+    server = Server(eng, k=a.k, more=a.more, words=words, two_pass=load_passes())
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # launchd stops it with SIGTERM: remove the socket
     s = listen(a.sock)
     log(f"listening on {a.sock}")
