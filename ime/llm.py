@@ -16,7 +16,7 @@ import time
 import mlx.core as mx
 import numpy as np
 from mlx_lm import load
-from mlx_lm.models.cache import make_prompt_cache
+from mlx_lm.models.cache import ArraysCache, can_trim_prompt_cache, make_prompt_cache
 
 from ime import fmt
 from ime.ngram import EXTRA_READINGS, Node, char_logp, char_readings_table, with_extra
@@ -363,13 +363,14 @@ class LLMEngine:
                 break
             common += 1
         common = min(common, len(ids) - 1)  # always feed at least one token to get fresh logits
-        if self._ctx_cache is None or common == 0:
-            self._ctx_cache, common = make_prompt_cache(self.model), 0
+        if self._ctx_cache is None or common == 0 or (common < len(self._ids) and not can_trim_prompt_cache(self._ctx_cache)):
+            self._ctx_cache, common = make_prompt_cache(self.model), 0  # a recurrent state (ArraysCache) only goes on
         else:
             for c in self._ctx_cache:
-                c.trim(c.offset - common)
+                if not isinstance(c, ArraysCache):  # its state is already at common == len(ids before)
+                    c.trim(c.offset - common)
         logits = self.model(mx.array(ids[common:])[None], cache=self._ctx_cache)[:, -1, :]
-        (mx.eval if wait else mx.async_eval)(logits, [c.state for c in self._ctx_cache])
+        (mx.eval if wait else mx.async_eval)(logits, _states(self._ctx_cache))
         self._ids, self._ctx_logits = ids, logits
 
     def _fork_cache(self, idx, steps):
@@ -378,8 +379,11 @@ class LLMEngine:
     @staticmethod
     def _reorder(cache, idx):
         for c in cache:
-            c.keys = c.keys[idx]
-            c.values = c.values[idx]
+            if isinstance(c, ArraysCache):
+                c.cache = [x[idx] for x in c.cache]
+            else:
+                c.keys = c.keys[idx]
+                c.values = c.values[idx]
 
     def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True):
         """Candidates for `keys`, best first; their token paths are left in `self.paths` (text -> path).
@@ -887,13 +891,14 @@ class _Cached:
                 break
             common += 1
         common = min(common, len(ids) - 1)
-        if self.cache is None or common == 0:
+        if self.cache is None or common == 0 or (common < len(self.ids) and not can_trim_prompt_cache(self.cache)):
             self.cache, common = make_prompt_cache(self.model), 0
         else:
             for c in self.cache:
-                c.trim(c.offset - common)
+                if not isinstance(c, ArraysCache):  # its state is already at common == len(ids before)
+                    c.trim(c.offset - common)
         self.ctx_logits = self.model(mx.array(ids[common:])[None], cache=self.cache)[:, -1, :]
-        (mx.eval if wait else mx.async_eval)(self.ctx_logits, [c.state for c in self.cache])
+        (mx.eval if wait else mx.async_eval)(self.ctx_logits, _states(self.cache))
         self.ids = ids
 
     def fork(self, idx, steps):
@@ -905,6 +910,9 @@ def _fork(model, ctx_cache, idx, steps):
     reorder copies the whole buffer, so it must not carry the default 256-slot preallocation."""
     cache = make_prompt_cache(model)
     for c, src in zip(cache, ctx_cache):
+        if isinstance(src, ArraysCache):  # a linear-attention layer's conv and recurrent state: rows only
+            c.cache = [x[idx] for x in src.cache]
+            continue
         k, v = src.keys, src.values
         off, cap = src.offset, src.offset + steps
         if k.shape[2] >= cap:
@@ -914,3 +922,7 @@ def _fork(model, ctx_cache, idx, steps):
             k, v = mx.pad(k, pad), mx.pad(v, pad)
         c.keys, c.values, c.offset = k[idx], v[idx], off
     return cache
+
+
+def _states(cache):
+    return [c.cache if isinstance(c, ArraysCache) else c.state for c in cache]
