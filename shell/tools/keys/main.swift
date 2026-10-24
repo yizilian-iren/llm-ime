@@ -26,6 +26,7 @@ struct Engine {
     static var hurried = 0             // hurry ops (5B.12; main thread)
     static var remote: [Bool] = []     // remote ops' "on" (7E.1; main thread)
 }
+UserDefaults.standard.set(true, forKey: "twoPasses")  // the tests below are for the two passes; one pass at the end (7D.2)
 let sock = NSTemporaryDirectory() + "llmime-keys-\(getpid()).sock"
 setenv("LLMIME_SOCK", sock, 1)
 let logDir = NSTemporaryDirectory() + "llmime-keys-log-\(getpid())"
@@ -492,6 +493,27 @@ wait(1.5)  // nothing is held for it any more
 try? FileManager.default.removeItem(atPath: logDir)
 Engine.quick = 0.05; Engine.full = 0.25
 
+let hurriedBefore = Engine.hurried
+// 7D.2: one pass (the menu's default): the engine sends no full answer; space waits for nothing, and more adds pages
+UserDefaults.standard.set(false, forKey: "twoPasses")
+Engine.quick = 0.05; Engine.full = nil; Engine.more = 0.3; Engine.moreExtra = ["F3", "F4", "F5", "F6", "F7"]
+client.text = ""
+press(letters("ab")); wait(0.15)
+let one0 = Date(); press(["space"])
+check(client.text == "Q:ab" && Date().timeIntervalSince(one0) < 0.1 && Engine.hurried == hurriedBefore,
+      "one pass: space commits the quick guess at once: \(client.text) \(Engine.hurried)")
+press(["esc"])
+client.text = ""
+press(letters("abcd")); wait(0.1); press(["down"]); wait(0.4)  // the next page asked for before more came, turned to when it comes
+press(["2"])
+check(client.text == "F7", "one pass: page down before more, 2 -> the 7th: \(client.text)")
+press(["esc"]); client.text = ""
+press(letters("abcd")); wait(0.5); press(["down"]); press(["2"])
+check(client.text == "F7", "one pass: page down after more, 2 -> the 7th: \(client.text)")
+press(["esc"])
+Engine.quick = 0.05; Engine.full = 0.25; Engine.more = nil; Engine.moreExtra = []
+UserDefaults.standard.set(true, forKey: "twoPasses")
+
 unlink(sock)
 // 7E.1: the menu's 远程计算 tells the engine, and stays off across connects (this tool's own defaults)
 let wasOn = EngineClient.remoteOn
@@ -501,6 +523,7 @@ wait(0.2)
 check(Engine.remote == [false, true], "远程计算 off, on: \(Engine.remote)")
 EngineClient.remoteOn = wasOn
 UserDefaults.standard.removeObject(forKey: "remoteOff")
+UserDefaults.standard.removeObject(forKey: "twoPasses")
 
 print(failed == 0 ? "keys: all passed" : "keys: \(failed) failed")
 exit(failed == 0 ? 0 : 1)

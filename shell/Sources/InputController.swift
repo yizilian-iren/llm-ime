@@ -184,7 +184,7 @@ final class InputController: IMKInputController {
     /// Candidates still for fewer keys (typed fast: the last key's answer not there yet) count as none (5A.4).
     private func waitForAnswer(_ event: NSEvent, full: Bool = false) -> Bool {
         guard !keys.isEmpty, !noWaiting, EngineClient.shared.connected else { return false }
-        let needFull = full && !picked && (stage == "" || stage == "quick")
+        let needFull = full && EngineClient.twoPasses && !picked && (stage == "" || stage == "quick")
         guard !hasAnswer || needFull else { return false }
         waiting = [event]
         waitStart = Date()
@@ -347,7 +347,7 @@ final class InputController: IMKInputController {
         comp?.answered(id: id, stage: stage, by: by)
         answeredKeys = keys.count
         if stage == "more" {
-            guard self.stage == "full" else { return }
+            guard self.stage == "full" || (!EngineClient.twoPasses && self.stage == "quick") else { return }  // one pass: quick is the answer (7D.2)
             self.stage = stage
             model.candidates = candidates + segments.map { $0.0 }
             segmentEnds = segments.map { $0.1 }
@@ -374,7 +374,7 @@ final class InputController: IMKInputController {
 
     /// Turns the page; a next page the engine has not sent yet is turned to when it comes.
     private func turnPage(_ step: Int, _ client: IMKTextInput) {
-        if step > 0 && !model.hasNext && stage == "full" {
+        if step > 0 && !model.hasNext && stage == (EngineClient.twoPasses ? "full" : "quick") {
             wantNextPage = true
             return
         }
@@ -442,7 +442,7 @@ final class InputController: IMKInputController {
             retry = nil
         }
         pieces = nil
-        if picked != nil, stage == "quick", requestId != 0, let first = model.candidates.first {  // the full answer may
+        if picked != nil, stage == "quick", EngineClient.twoPasses, requestId != 0, let first = model.candidates.first {  // the full answer may
             let id = requestId                                                                  // still come (6A.4)
             lates[id] = (first, text, Date())
             Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in self?.lateFull(id, nil) }
