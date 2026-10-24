@@ -103,7 +103,7 @@ class LLMEngine:
         self.typo_penalty, self.typo_rows = float(typo_penalty), int(typo_rows)
         self.typos = _typos(self.pinyin, self.prefixes, self.typo_penalty) if self.typo_penalty else {}
         self.root, self.tok_text = self._token_trie(model)
-        self._ids, self._ctx_cache, self._ctx_logits = [], None, None
+        self._ids, self._ctx_cache, self._ctx_logits, self._snaps = [], None, None, []
         self.stats = {"forward_ms": 0.0, "calls": 0}
 
     # --- token index ----------------------------------------------------------
@@ -357,19 +357,8 @@ class LLMEngine:
         ids = self.tok.encode(prompt)
         if ids == self._ids:
             return
-        common = 0
-        for a, b in zip(ids, self._ids):
-            if a != b:
-                break
-            common += 1
-        common = min(common, len(ids) - 1)  # always feed at least one token to get fresh logits
-        if self._ctx_cache is None or common == 0 or (common < len(self._ids) and not can_trim_prompt_cache(self._ctx_cache)):
-            self._ctx_cache, common = make_prompt_cache(self.model), 0  # a recurrent state (ArraysCache) only goes on
-        else:
-            for c in self._ctx_cache:
-                if not isinstance(c, ArraysCache):  # its state is already at common == len(ids before)
-                    c.trim(c.offset - common)
-        logits = self.model(mx.array(ids[common:])[None], cache=self._ctx_cache)[:, -1, :]
+        tail = len(self.tok.encode(fmt.SEP2)) if prompt.endswith(fmt.SEP2) else 0  # the keys go in before it
+        self._ctx_cache, logits = _advance(self.model, self._ctx_cache, self._ids, ids, self._snaps, tail)
         (mx.eval if wait else mx.async_eval)(logits, _states(self._ctx_cache))
         self._ids, self._ctx_logits = ids, logits
 
@@ -880,29 +869,59 @@ class _Cached:
     """A second model's batch-1 context cache, kept like LLMEngine's own (_prefill / _fork_cache)."""
 
     def __init__(self, model):
-        self.model, self.ids, self.cache, self.ctx_logits = model, [], None, None
+        self.model, self.ids, self.cache, self.ctx_logits, self.snaps = model, [], None, None, []
 
     def prefill(self, ids, wait=True):
         if ids == self.ids:
             return
-        common = 0
-        for a, b in zip(ids, self.ids):
-            if a != b:
-                break
-            common += 1
-        common = min(common, len(ids) - 1)
-        if self.cache is None or common == 0 or (common < len(self.ids) and not can_trim_prompt_cache(self.cache)):
-            self.cache, common = make_prompt_cache(self.model), 0
-        else:
-            for c in self.cache:
-                if not isinstance(c, ArraysCache):  # its state is already at common == len(ids before)
-                    c.trim(c.offset - common)
-        self.ctx_logits = self.model(mx.array(ids[common:])[None], cache=self.cache)[:, -1, :]
+        self.cache, self.ctx_logits = _advance(self.model, self.cache, self.ids, ids, self.snaps)
         (mx.eval if wait else mx.async_eval)(self.ctx_logits, _states(self.cache))
         self.ids = ids
 
     def fork(self, idx, steps):
         return _fork(self.model, self.cache, idx, steps)
+
+
+SNAPS = 6  # recurrent-state snapshots kept per context cache (Qwen3.5-0.8B: 19.5 MB each)
+
+
+def _advance(model, cache, old, ids, snaps, tail=0):
+    """(cache, last logits) of a batch-1 context cache brought from token ids `old` to `ids`, reusing the longest
+    common prefix: KV layers are trimmed back to it; a recurrent state (ArraysCache: Qwen3.5's linear attention)
+    cannot go back, so it goes on when `ids` only extends `old`, else restarts from the latest of `snaps`, else from
+    nothing. With `tail` (the tokens of SEP2, which the fine-tuned prompt ends with: the next key goes in before
+    it, a backspace goes back to an earlier one) a state is kept in `snaps` before them."""
+    common = 0
+    for a, b in zip(ids, old):
+        if a != b:
+            break
+        common += 1
+    common = min(common, len(ids) - 1)  # always feed at least one token to get fresh logits
+    recurrent = cache is not None and not can_trim_prompt_cache(cache)
+    start = 0
+    if cache is None or common == 0:
+        cache = make_prompt_cache(model)
+    elif not recurrent or common == len(old):
+        start = common
+    else:
+        best = max((sn for sn in snaps if sn[0] <= common and ids[:sn[0]] == sn[1]), key=lambda sn: sn[0], default=None)
+        if best is None:
+            cache = make_prompt_cache(model)
+        else:
+            start = best[0]
+            for c, st in zip(cache, best[2]):
+                if st is not None:
+                    c.cache = list(st)
+    for c in cache:
+        if not isinstance(c, ArraysCache):  # a recurrent state is already at `start`
+            c.trim(c.offset - start)
+    if tail and not can_trim_prompt_cache(cache) and len(ids) - tail > start:
+        p = len(ids) - tail
+        model(mx.array(ids[start:p])[None], cache=cache)
+        snaps.append((p, ids[:p], [list(c.cache) if isinstance(c, ArraysCache) else None for c in cache]))
+        del snaps[:-SNAPS]
+        start = p
+    return cache, model(mx.array(ids[start:])[None], cache=cache)[:, -1, :]
 
 
 def _fork(model, ctx_cache, idx, steps):
