@@ -378,7 +378,7 @@ class LLMEngine:
     def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True):
         """Candidates for `keys`, best first; their token paths are left in `self.paths` (text -> path).
 
-        beam: overrides the beam width. mix: False skips the mixed-in model.
+        beam: overrides the beam width; a tuple is the width of each step (the last one for the steps after). mix: False skips the mixed-in model.
         prefix: a path [(token_id, key_end), ...] to start from instead of the empty sentence (fed in one
           forward per model); for the quick first guess, the previous keystroke's best candidate minus its
           last token.
@@ -506,7 +506,7 @@ class LLMEngine:
         or None when `stop` dropped it. `fixes`: readings that need fixes too (`alts`: extra readings only).
         The keys in the prompt are `prompt_keys`, by default `keys`."""
         alts = fixes if alts is None else alts
-        beam = beam or self.beam
+        widths = tuple(beam) if isinstance(beam, (tuple, list)) else (beam or self.beam,)
         mix = bool(self.mix) and mix
         plain = context[-64:] if context.strip() else self.empty_prompt
         # the forwards of the prefill run on the GPU while the keys are read below (5B.13)
@@ -608,6 +608,7 @@ class LLMEngine:
                 return float(S[j]), h[1] + self.tok_text[int(T[j])], h[3] + ((int(T[j]), int(E[j])),), h[4] + W[j]
 
             finish_now = not (self.keys_in_prompt and eos)  # else one more step scores the end of the sentence
+            beam = widths[min(_step, len(widths) - 1)]
             nxt, parents, tids = [], [], []
             typo_rows = 0
             for i, j in enumerate(order):
