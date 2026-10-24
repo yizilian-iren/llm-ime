@@ -85,7 +85,7 @@ def session(eng, **quick):
 def run_split(a):
     eng = engines.load("v02")
     timed = Timed(eng)
-    items = [json.loads(line) for line in open("data/private/eval.jsonl")][: a.items]
+    items = [json.loads(line) for line in open(a.eval) if not a.src or json.loads(line)["src"] == a.src][: a.items]
     eng.convert("", "nihao", k=1)
     settings = {"quick": {}, "quick nomix": dict(mix=False), "quick beam2": dict(beam=2)}
     per = collections.defaultdict(list)
@@ -126,7 +126,7 @@ def run_split(a):
 
 def run_paced(a):
     eng = engines.load("v02")
-    items = [json.loads(line) for line in open("data/private/eval.jsonl")][: a.items]
+    items = [json.loads(line) for line in open(a.eval) if not a.src or json.loads(line)["src"] == a.src][: a.items]
     eng.convert("", "nihao", k=1)
     rng = random.Random(1)
     log = {}  # id -> dict
@@ -193,6 +193,8 @@ def main():
     ap.add_argument("--items", type=int, default=40)
     ap.add_argument("--form", default="full", choices=["initials", "full", "mixed"])
     ap.add_argument("--gap", type=float, default=115)
+    ap.add_argument("--eval", default="data/private/eval.jsonl")
+    ap.add_argument("--src", default="", help="only items from this source (user / public): home4070 gets public ones (7E.1)")
     a = ap.parse_args()
     (run_split if a.mode == "split" else run_paced)(a)
 

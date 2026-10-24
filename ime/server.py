@@ -20,6 +20,10 @@ One JSON object per line, both ways:
   -> {"op": "import", "path": "/x/words.tsv", "count": 1, "id": 9}   adds `keys<TAB>word[<TAB>count]` lines
                                                                  <- {"id": 9, "imported": n}
   -> {"op": "ping", "id": 8}   <- {"id": 8, "op": "pong"}
+  -> {"op": "remote", "on": false}                              the menu's 远程计算 (7E.1): off, everything is
+                                                                 computed here; with remote.json (ime.remote) each
+                                                                 answer says where it was computed: "by": "remote" /
+                                                                 "local"
 A request whose context is missing or null uses the text committed through this service since it started.
 Each connection gets answers to its newest request only: its older ones still being converted are dropped
 (ime.session, tagged by connection, so a second client does not starve the shell). All model work runs on the
@@ -41,7 +45,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ime import engine as engines  # noqa: E402
-from ime import userwords, zh_en  # noqa: E402
+from ime import remote, userwords, zh_en  # noqa: E402
 from ime.session import Session  # noqa: E402
 
 DEFAULT_SOCK = os.path.expanduser("~/Library/Application Support/llm-ime/engine.sock")
@@ -87,6 +91,9 @@ class Server:
         if latest is None or (latest[1], latest[2]) != (context, keys):
             return  # a newer request of this connection is queued; only its results matter
         msg = {"id": latest[0], "stage": stage, "candidates": cands}
+        by = getattr(self.session.engine, "last_by", None)  # ime.remote: who computed it (7E.1)
+        if by:
+            msg["by"] = by
         if segments is not None:
             msg["segments"] = [[t, e] for t, e in segments]
         tag.send(msg)
@@ -106,9 +113,14 @@ class Server:
             self.committed = (self.committed + msg.get("text", ""))[-CONTEXT_CHARS:]
         elif op == "learn" and self.words:
             self.words.learn(msg.get("keys", ""), msg.get("text", ""), msg.get("first", ""))
+        elif op == "remote":
+            if hasattr(self.session.engine, "set_on"):
+                self.session.engine.set_on(msg.get("on", True))
         elif op == "forget":
             if self.words:
                 self.words.forget()
+            if hasattr(self.session.engine, "forget"):
+                self.session.engine.forget()  # the remote's copy of the personal model too
             if engines.forget_personal() and self.personal:  # 6A.2: back to the base, which needs a new process
                 log("personal model deleted: restarting on the base")
                 threading.Timer(0.5, os._exit, (0,)).start()  # launchd starts it again (KeepAlive)
@@ -168,6 +180,7 @@ def main():
     ap.add_argument("--words", default=userwords.DEFAULT_PATH, help="the user's word list (5A.3); '' for none")
     # MLX keeps freed buffers for reuse without a limit: 3.7 GB on M3 for 670 MB of models (4A.7). 256 MB: on M4
     # 1.3 GB after typing bench_keys twice, against 3.0 GB without.
+    ap.add_argument("--remote", default=remote.DEFAULT_CONFIG, help="ime.remote's settings (7E.1); '' for none")
     ap.add_argument("--cache-mb", type=int, default=256, help="MLX buffer cache limit (-1: MLX's default)")
     a = ap.parse_args()
     if a.cache_mb >= 0:
@@ -180,6 +193,10 @@ def main():
     eng.convert("", "nihao", k=1)  # first call compiles; do it before the shell waits on it
     zh_en.table()  # the English mode's dictionary (6B.2): 0.25 s to read
     log(f"loaded {a.engine} ({getattr(eng, 'model_path', '?')}) in {time.time() - t:.1f}s")
+    cfg = remote.load_config(a.remote) if a.remote else None
+    if cfg and cfg.get("host"):  # the model work goes to home4070 first, this engine when it is slow or away
+        eng = remote.RemoteEngine(eng, **cfg)
+        log(f"remote engine at {cfg['host']}:{cfg.get('port', remote.DEFAULT_PORT)}")
     words = userwords.UserWords(eng, a.words) if a.words and hasattr(eng, "score") else None
     server = Server(eng, k=a.k, more=a.more, words=words)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # launchd stops it with SIGTERM: remove the socket

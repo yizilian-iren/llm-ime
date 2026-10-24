@@ -330,7 +330,7 @@ final class InputController: IMKInputController {
     /// The engine answers each key with stage "quick", then "full" (five), then after a pause "more": the full
     /// answer's five followed by further candidates, which only add pages (the page on screen stays as it is),
     /// and after those the candidates for the start of the keys (4A.10), so the pages do not run out.
-    func engineAnswered(id: Int, stage: String, candidates: [String], segments: [(String, Int)] = []) {
+    func engineAnswered(id: Int, stage: String, candidates: [String], segments: [(String, Int)] = [], by: String? = nil) {
         if stage == "full" { lateFull(id, candidates) }
         guard id == requestId, !keys.isEmpty, let client = currentClient else { return }
         let started = ProcessInfo.processInfo.systemUptime
@@ -344,7 +344,7 @@ final class InputController: IMKInputController {
             show(client, fade: false)
             return
         }
-        comp?.answered(id: id, stage: stage)
+        comp?.answered(id: id, stage: stage, by: by)
         answeredKeys = keys.count
         if stage == "more" {
             guard self.stage == "full" else { return }
@@ -654,6 +654,9 @@ final class InputController: IMKInputController {
         let retrain = NSMenuItem(title: "暂停每周重训", action: #selector(toggleRetrain(_:)), keyEquivalent: "")
         retrain.state = UserDefaults.standard.bool(forKey: "retrainPaused") ? .on : .off
         menu.addItem(retrain)
+        let remote = NSMenuItem(title: "远程计算", action: #selector(toggleRemote(_:)), keyEquivalent: "")  // 7E.1
+        remote.state = EngineClient.remoteOn ? .on : .off
+        menu.addItem(remote)
         menu.addItem(NSMenuItem(title: "打开记录文件夹", action: #selector(openLog(_:)), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "删除全部记录", action: #selector(deleteLog(_:)), keyEquivalent: ""))
         return menu
@@ -663,6 +666,7 @@ final class InputController: IMKInputController {
     @objc func toggleRetrain(_ sender: Any?) {
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "retrainPaused"), forKey: "retrainPaused")
     }
+    @objc func toggleRemote(_ sender: Any?) { EngineClient.remoteOn.toggle() }
     @objc func openLog(_ sender: Any?) { TypingLog.shared.openFolder() }
     @objc func deleteLog(_ sender: Any?) {
         logged = nil  // the last commit's record too

@@ -43,6 +43,7 @@ M3_BASE = "$HOME/Library/Application Support/llm-ime"  # as scripts/deploy_m3.sh
 M3_MODELS = "$HOME/Projects/llm-ime/models"
 M3_PY = "$HOME/Projects/llm-ime/.venv/bin/python"
 GPU_DIR = "llm-ime"  # home4070: .venv-train, models/<base>-hf, data/replay/<base>.npz
+REMOTE_DIR = "llm-ime/remote"  # home4070: the remote engine (7E.1, scripts/install_remote4070.sh)
 LABEL = "com.llm-ime.engine"
 BUNDLE = "com.iren.inputmethod.LLMIME"
 TRAIN_ARGS = ["--lora", "16", "--ckpt", "--tokens", "4096", "--ce-chunk", "256", "--mem-frac", "0.30",  # 6A.1
@@ -293,6 +294,23 @@ def deploy(run, work):
             '*) rm -rf "$d";; esac; done')
     run["deployed"] = name
     log(f"deployed {name} (before: {prev or 'the base'})")
+    push_remote(name, work)
+
+
+def push_remote(name, work):
+    """The same personal model for home4070's remote engine (7E.1, scripts/install_remote4070.sh), which M3 only
+    uses while both run the same model: copied there, its service restarted. Not installed or down: M3 computes
+    everything itself until it is (install_remote4070.sh copies M3's personal model too)."""
+    try:
+        if ssh(GPU, f"[ -d {REMOTE_DIR}/models ] && echo yes || echo no", timeout=40).strip() != "yes":
+            return
+        sh(["rsync", "-a", "--delete", "-e", " ".join(SSH), os.path.join(work, "new-4bit") + "/",
+            f"{GPU}:{REMOTE_DIR}/models/{name}/"])
+        ssh(GPU, f"cd {REMOTE_DIR}/models && ln -sfn {name} personal-4bit && "
+                 f"for d in personal-2*-4bit; do [ $d = {name} ] || rm -rf $d; done && systemctl --user restart llm-ime-remote")
+        log(f"home4070's remote engine: {name}")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log(f"home4070's remote engine not updated ({e}): M3 computes everything itself until it is")
 
 
 def hold(run, work):

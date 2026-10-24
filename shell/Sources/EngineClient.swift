@@ -12,9 +12,10 @@ final class EngineClient {
         return base.appendingPathComponent("llm-ime/engine.sock").path
     }
 
-    /// Called on the main thread with (request id, stage "quick" / "full" / "more", candidates, segments): with
-    /// "more", candidates for the start of the keys and how many keys each uses (4A.10); otherwise none.
-    var onResult: ((Int, String, [String], [(String, Int)]) -> Void)?
+    /// Called on the main thread with (request id, stage "quick" / "full" / "more", candidates, segments, by): with
+    /// "more", candidates for the start of the keys and how many keys each uses (4A.10); otherwise none. by: where the
+    /// engine computed it, "remote" (home4070) / "local", or nil without remote.json (7E.1).
+    var onResult: ((Int, String, [String], [(String, Int)], String?) -> Void)?
     private(set) var connected = false  // read on the main thread
 
     private let queue = DispatchQueue(label: "llm-ime.engine")
@@ -49,6 +50,12 @@ final class EngineClient {
     /// Space waits for the full answer to the latest keys: the engine starts it now, not after its pause (5B.12).
     func hurry() {
         send(["op": "hurry"])
+    }
+
+    /// The menu's 远程计算 (7E.1): off, the engine computes everything on this Mac. Sent again on each connect.
+    static var remoteOn: Bool {
+        get { !UserDefaults.standard.bool(forKey: "remoteOff") }
+        set { UserDefaults.standard.set(!newValue, forKey: "remoteOff"); shared.send(["op": "remote", "on": newValue]) }
     }
 
     /// Clears the engine's word list (删除全部记录).
@@ -95,6 +102,7 @@ final class EngineClient {
             return
         }
         fd = s
+        if !Self.remoteOn { send(["op": "remote", "on": false]) }  // queued behind this: fd is set
         DispatchQueue.main.async { self.connected = true }
         Thread.detachNewThread { self.read(s) }
     }
@@ -124,7 +132,8 @@ final class EngineClient {
                     guard s.count == 2, let t = s[0] as? String, let n = s[1] as? Int else { return nil }
                     return (t, n)
                 }
-                DispatchQueue.main.async { self.onResult?(id, stage, cands, segs) }
+                let by = obj["by"] as? String
+                DispatchQueue.main.async { self.onResult?(id, stage, cands, segs, by) }
             }
         }
         queue.async { if self.fd == s { self.disconnect() } }

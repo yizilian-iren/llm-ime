@@ -24,6 +24,7 @@ struct Engine {
     static var contexts: [String: String] = [:]  // keys -> the context they came with (read on the main thread)
     static var learned: [String] = []  // "keys text first" of each learn op, and "forget" (5A.3; main thread)
     static var hurried = 0             // hurry ops (5B.12; main thread)
+    static var remote: [Bool] = []     // remote ops' "on" (7E.1; main thread)
 }
 let sock = NSTemporaryDirectory() + "llmime-keys-\(getpid()).sock"
 setenv("LLMIME_SOCK", sock, 1)
@@ -61,6 +62,11 @@ Thread.detachNewThread {
             let line = buf[buf.startIndex..<nl]
             buf = Data(buf[(nl + 1)...])
             guard let m = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            if m["op"] as? String == "remote" {
+                let on = m["on"] as? Bool ?? true
+                DispatchQueue.main.async { Engine.remote.append(on) }
+                continue
+            }
             if m["op"] as? String == "hurry" {
                 DispatchQueue.main.async { Engine.hurried += 1 }
                 continue
@@ -77,8 +83,8 @@ Thread.detachNewThread {
                 reply(id, "english", k == "pingguo" ? ["apple", "Apple"] : [], after: 0.05)
                 continue
             }
-            reply(id, "quick", ["Q:" + k, "Q2:" + k], after: Engine.quick)
-            reply(id, "full", ["F:" + k, "F2:" + k], after: Engine.full)
+            reply(id, "quick", ["Q:" + k, "Q2:" + k], after: Engine.quick, extra: ["by": "local"])
+            reply(id, "full", ["F:" + k, "F2:" + k], after: Engine.full, extra: ["by": "remote"])
             reply(id, "more", ["F:" + k, "F2:" + k] + Engine.moreExtra, after: Engine.more,
                   extra: ["segments": [["S" + k.prefix(2), 2], ["W" + k, k.count]]])
         }
@@ -127,8 +133,8 @@ let client = FakeClient()
 let ctl = InputController(server: nil, delegate: nil, client: nil)!
 ctl.testClient = client
 AppDelegate.active = ctl
-EngineClient.shared.onResult = { id, stage, cands, segs in
-    ctl.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs)
+EngineClient.shared.onResult = { id, stage, cands, segs, by in
+    ctl.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs, by: by)
 }
 EngineClient.shared.start()
 
@@ -312,6 +318,9 @@ if rs.count == 4 {
     check(((a["events"] as? [[Any]]) ?? []).contains { $0.count == 3 && $0[1] as? String == "page" }, "page event: \(a)")
     let answers = (a["answers"] as? [[Any]]) ?? []
     check(["quick", "full", "more"].allSatisfy { st in answers.contains { $0[1] as? String == st } }, "answer times: \(answers)")
+    let by = (a["by"] as? [String]) ?? []  // 7E.1: quick "local", full "remote", more none (the fake's)
+    check(by.count == answers.filter { $0[1] as? String != "more" }.count && by.contains("r") && by.contains("l"),
+          "where each answer was computed: \(by) for \(answers)")
     check(a["t"] is String && a["ms"] is Int && a["context"] is String && a["stage"] as? String == "more", "fields: \(a)")
     let evs = ((b["events"] as? [[Any]]) ?? []).map { $0[1] as? String ?? "" }
     check(b["keys"] as? String == "abc" && evs == ["a", "b", "x", "del", "c"], "deleted and typed again: \(evs)")
@@ -484,5 +493,14 @@ try? FileManager.default.removeItem(atPath: logDir)
 Engine.quick = 0.05; Engine.full = 0.25
 
 unlink(sock)
+// 7E.1: the menu's 远程计算 tells the engine, and stays off across connects (this tool's own defaults)
+let wasOn = EngineClient.remoteOn
+EngineClient.remoteOn = false
+EngineClient.remoteOn = true
+wait(0.2)
+check(Engine.remote == [false, true], "远程计算 off, on: \(Engine.remote)")
+EngineClient.remoteOn = wasOn
+UserDefaults.standard.removeObject(forKey: "remoteOff")
+
 print(failed == 0 ? "keys: all passed" : "keys: \(failed) failed")
 exit(failed == 0 ? 0 : 1)

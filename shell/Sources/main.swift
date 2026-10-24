@@ -9,8 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         let name = Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String ?? "LLMIME_Connection"
         server = IMKServer(name: name, bundleIdentifier: Bundle.main.bundleIdentifier)
-        EngineClient.shared.onResult = { id, stage, cands, segs in
-            AppDelegate.active?.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs)
+        EngineClient.shared.onResult = { id, stage, cands, segs, by in
+            AppDelegate.active?.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs, by: by)
         }
         EngineClient.shared.start()
         _ = CandidatePanel.shared  // built now: built on the first key, it held up that key's answer (4A.8)

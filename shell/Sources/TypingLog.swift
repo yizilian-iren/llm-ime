@@ -96,6 +96,8 @@ struct Composition {
     var events: [[Any]] = []               // [ms, "a"] letter, [ms, "del"], [ms, "page", ±1], [ms, "move", ±1],
                                            // [ms, "wait", ms waited for an answer before committing (4A.8)]
     var answers: [[Any]] = []              // [keys count, "quick" / "full" / "more", ms from the key to the answer]
+    var by: [String] = []                  // per answer: "r" computed on home4070, "l" on this Mac (7E.1; none
+                                           // without remote.json)
     var sent: [Int: (Int, Date)] = [:]     // request id -> (keys count, when sent)
     var seen: (String?, String, Int)?      // at the first space: the first candidate on screen, its stage ("": for
                                            // fewer keys, 5A.4) and how many keys it is for
@@ -123,9 +125,10 @@ struct Composition {
         flips.append([ms, n, stage, n == shownKeys ? 1 : 0, shown.first == top.first ? 0 : 1])
     }
 
-    mutating func answered(id: Int, stage: String) {
+    mutating func answered(id: Int, stage: String, by side: String? = nil) {
         guard let (n, at) = sent[id] else { return }
         answers.append([n, stage, Int(Date().timeIntervalSince(at) * 1000)])
+        if let side = side { by.append(side == "remote" ? "r" : "l") }
         if stage == "more" { sent[id] = nil }
     }
 
@@ -143,6 +146,7 @@ struct Composition {
         if let used = used { r["used"] = used }
         if !shell.isEmpty { r["shell"] = shell }
         if !busy.isEmpty { r["busy"] = busy }
+        if !by.isEmpty { r["by"] = by }
         if !flips.isEmpty { r["flips"] = flips }
         if let c = ctxMs { r["ctx_ms"] = c }
         if let (first, stage, n) = seen {
