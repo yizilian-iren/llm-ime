@@ -97,8 +97,7 @@ class KeyMask:
     def keys_of(self, prompt_ids):
         """The keys in a ctx_first prompt (context SEP1 k e y s SEP2), or None."""
         text = self.tok.decode(list(prompt_ids))
-        a, b = text.rfind(fmt.SEP1), text.rfind(fmt.SEP2)
-        ks = text[a + 1 : b].replace(" ", "") if 0 <= a < b else ""
+        ks = (fmt.keys_in(text) or "").replace(" ", "")
         return ks if ks.isascii() and ks.isalpha() and ks.islower() else None
 
     def _ends(self, s, starts, keys):

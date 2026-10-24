@@ -357,7 +357,8 @@ class LLMEngine:
         ids = self.tok.encode(prompt)
         if ids == self._ids:
             return
-        tail = len(self.tok.encode(fmt.SEP2)) if prompt.endswith(fmt.SEP2) else 0  # the keys go in before it
+        sep2 = fmt.seps(self.order)[1]
+        tail = len(self.tok.encode(sep2)) if sep2 and prompt.endswith(sep2) else 0  # the keys go in before it
         self._ctx_cache, logits = _advance(self.model, self._ctx_cache, self._ids, ids, self._snaps, tail)
         (mx.eval if wait else mx.async_eval)(logits, _states(self._ctx_cache))
         self._ids, self._ctx_logits = ids, logits
@@ -890,7 +891,8 @@ def _advance(model, cache, old, ids, snaps, tail=0):
     common prefix: KV layers are trimmed back to it; a recurrent state (ArraysCache: Qwen3.5's linear attention)
     cannot go back, so it goes on when `ids` only extends `old`, else restarts from the latest of `snaps`, else from
     nothing. With `tail` (the tokens of SEP2, which the fine-tuned prompt ends with: the next key goes in before
-    it, a backspace goes back to an earlier one) a state is kept in `snaps` before them."""
+    it, a backspace goes back to an earlier one) a state is kept in `snaps` before them; without, after the last
+    token (a prompt ending in its keys, fmt `open`: a backspace restarts from the state one key further back)."""
     common = 0
     for a, b in zip(ids, old):
         if a != b:
@@ -921,7 +923,11 @@ def _advance(model, cache, old, ids, snaps, tail=0):
         snaps.append((p, ids[:p], [list(c.cache) if isinstance(c, ArraysCache) else None for c in cache]))
         del snaps[:-SNAPS]
         start = p
-    return cache, model(mx.array(ids[start:])[None], cache=cache)[:, -1, :]
+    logits = model(mx.array(ids[start:])[None], cache=cache)[:, -1, :]
+    if not tail and not can_trim_prompt_cache(cache):
+        snaps.append((len(ids), list(ids), [list(c.cache) if isinstance(c, ArraysCache) else None for c in cache]))
+        del snaps[:-SNAPS]
+    return cache, logits
 
 
 def _fork(model, ctx_cache, idx, steps):

@@ -30,17 +30,17 @@ def save(path, rows, keyids=None):  # as scripts/gen_train.save, which imports t
 def encode(tok, s, order):
     """(ids, prefix length, context start, context end) or None, as gen_train.encode."""
     ctx, keys, target = s["context"], s["keys"], s["text"]
-    if order == "interleave":
+    if fmt.base(order) == "interleave":
         if any(len(tok.encode(ch)) != 1 for ch in target):
             return None
         ids, p = fmt.interleave(tok.encode, ctx, s["pieces"], target)
-        return ids + [tok.eos_token_id], p, 0, p - len(tok.encode(fmt.SEP1))
+        return ids + [tok.eos_token_id], p, 0, p - len(tok.encode(fmt.seps(order)[0]))
     p = tok.encode(fmt.prompt(ctx, keys, order))
     t = tok.encode(target) + [tok.eos_token_id]
     cs = ce = 0
     if ctx:
-        if order == "keys_first":
-            k = tok.encode(fmt.keys_part(keys))
+        if fmt.base(order) == "keys_first":
+            k = tok.encode(fmt.keys_part(keys, order))
             if p[: len(k)] == k:
                 cs, ce = len(k), len(p)
         else:
@@ -55,7 +55,7 @@ def main():
     ap.add_argument("samples")
     ap.add_argument("--test-days", required=True)
     ap.add_argument("--tokenizer", required=True)
-    ap.add_argument("--order", default="ctx_first", choices=fmt.ORDERS)
+    ap.add_argument("--order", default="ctx_first", type=fmt.parse_order)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     from transformers import AutoTokenizer
@@ -71,7 +71,7 @@ def main():
         if r:
             rows["valid" if s["day"] in test_days else "train"].append(r)
     os.makedirs(a.out, exist_ok=True)
-    keyids = [tok.encode(c)[0] for c in "abcdefghijklmnopqrstuvwxyz"] if a.order == "interleave" else None
+    keyids = [tok.encode(c)[0] for c in "abcdefghijklmnopqrstuvwxyz"] if fmt.base(a.order) == "interleave" else None
     for name, rs in rows.items():
         if not rs:
             sys.exit(f"no {name} samples")

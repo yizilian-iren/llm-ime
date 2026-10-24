@@ -171,18 +171,18 @@ def encode(args):
     lines, seed, order = args
     rows = []
     for ctx, keys, target, pieces in samples(lines, seed):
-        if order == "interleave":
+        if fmt.base(order) == "interleave":
             if any(len(TOK.encode(ch)) != 1 for ch in target):  # rare characters: not one token each
                 continue
             ids, p = fmt.interleave(TOK.encode, ctx, pieces, target)
-            rows.append((ids + [TOK.eos_token_id], p, 0, p - len(TOK.encode(fmt.SEP1))))
+            rows.append((ids + [TOK.eos_token_id], p, 0, p - len(TOK.encode(fmt.seps(order)[0]))))
             continue
         p = TOK.encode(fmt.prompt(ctx, keys, order))
         t = TOK.encode(target) + [TOK.eos_token_id]
         cs = ce = 0
         if ctx:
-            if order == "keys_first":
-                k = TOK.encode(fmt.keys_part(keys))
+            if fmt.base(order) == "keys_first":
+                k = TOK.encode(fmt.keys_part(keys, order))
                 if p[: len(k)] == k:
                     cs, ce = len(k), len(p)
             else:
@@ -241,7 +241,7 @@ def main():
     ap.add_argument("--n", type=int, default=4_000_000)
     ap.add_argument("--tokenizer", default="models/Qwen3-0.6B-Base")
     ap.add_argument("--out", default="data/train")
-    ap.add_argument("--order", default="ctx_first", choices=fmt.ORDERS)
+    ap.add_argument("--order", default="ctx_first", type=fmt.parse_order)
     ap.add_argument("--private", default="", help="jsonl with a 'text' field (the user's own messages)")
     ap.add_argument("--english", type=float, default=0.8, help="share of lines with English words giving a mixed target")
     ap.add_argument("--english-extra", type=float, default=0.25,
@@ -250,7 +250,7 @@ def main():
     ap.add_argument("--align", type=float, default=0.0, help="share of targets cut at jieba word boundaries (6B.6)")
     a = ap.parse_args()
     global ENGLISH, TYPOS, ALIGN
-    ENGLISH, TYPOS, ALIGN = (0.0 if a.order == "interleave" else a.english), a.typos, a.align
+    ENGLISH, TYPOS, ALIGN = (0.0 if fmt.base(a.order) == "interleave" else a.english), a.typos, a.align
     private = [json.loads(x)["text"] for x in open(a.private)] if a.private else None
     rows = []
     rng = random.Random(0)
@@ -265,7 +265,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     init(a.tokenizer)
     # interleave: the key tokens inside the target span (the letters) get no loss in train.py
-    keyids = [TOK.encode(c)[0] for c in "abcdefghijklmnopqrstuvwxyz"] if a.order == "interleave" else None
+    keyids = [TOK.encode(c)[0] for c in "abcdefghijklmnopqrstuvwxyz"] if fmt.base(a.order) == "interleave" else None
     save(f"{a.out}/valid.npz", rows[:5000], keyids)
     save(f"{a.out}/train.npz", rows[5000 : a.n], keyids)
     toks = sum(len(r[0]) for r in rows)
