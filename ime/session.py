@@ -48,13 +48,14 @@ from ime import zh_en
 
 class Session:
     def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False,
-                 words=None, prefix_keys=10, full_delay=0.0, two_pass=False):
+                 words=None, prefix_keys=10, full_delay=0.0, two_pass=False, prefix_rows=1):
         self.engine, self.on_result, self.k, self.words = engine, on_result, k, words
         self.more, self.more_delay = more, more_delay
         self.segments = segments and hasattr(engine, "segments")
         self.on_error = on_error or traceback.print_exc
         self.quick = quick or dict(k=3, beam=3, mix=True, eos=False)  # convert() options of the quick guess
         self.prefix_keys = prefix_keys  # keys this long or longer: the quick guess starts from the last best
+        self.prefix_rows = prefix_rows  # 10 keys or more: the quick guess goes on from this many of the last paths (7D.3)
         self.full_delay = full_delay
         self.two_pass = two_pass
         self._cond = threading.Condition()
@@ -208,10 +209,17 @@ class Session:
         if len(keys) < self.prefix_keys:
             cands = self._convert(context, keys, **{**self.quick, "eos": True})
         else:
-            prefix = None
+            prefix, prefixes = None, None
             if self._last and self._last[0] == context and keys.startswith(self._last[1]) and self._last[2]:
                 prefix = list(self._last[2][:-1]) or None
-            cands = self._convert(context, keys, prefix=prefix, **self.quick)
+                if self.prefix_rows > 1 and prefix:
+                    prefixes = []
+                    for path in self._last[3][: self.prefix_rows]:
+                        if path[:-1] and list(path[:-1]) not in prefixes:
+                            prefixes.append(list(path[:-1]))
+                    prefix = None if len(prefixes) < 2 else prefix
+                    prefixes = prefixes if len(prefixes) > 1 else None
+            cands = self._convert(context, keys, prefix=prefix, **({"prefixes": prefixes} if prefixes else {}), **self.quick)
         self._remember(context, keys, cands)
         if self.words and cands:
             cands = self.words.whole(keys, cands)
@@ -226,7 +234,7 @@ class Session:
         n = self._readable(keys)
         if n == 0:
             return [keys]
-        head = self.engine.convert(context, keys[:n], **{**kw, "prefix": None})
+        head = self.engine.convert(context, keys[:n], **{**{a: b for a, b in kw.items() if a != "prefixes"}, "prefix": None})
         if head is None:
             return None
         return (cands + [c + keys[n:] for c in head if c + keys[n:] != keys])[: kw.get("k", 5)] or [keys]
@@ -244,4 +252,4 @@ class Session:
     def _remember(self, context, keys, cands):
         path = cands and getattr(self.engine, "paths", {}).get(cands[0])
         if path:  # not for a candidate with typed letters at the end: it has no token path
-            self._last = (context, keys, path)
+            self._last = (context, keys, path, list(getattr(self.engine, "paths", {}).values()))

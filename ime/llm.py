@@ -363,6 +363,25 @@ class LLMEngine:
         (mx.eval if wait else mx.async_eval)(logits, _states(self._ctx_cache))
         self._ids, self._ctx_logits = ids, logits
 
+    def _path_score(self, path, out, mout, mix_w, edges_at, n):
+        """The score the search gives a path it did not walk (7D.3): the log-probs of its tokens (the mixed-in model's
+        added with its weight), less the costs of their edges. `out`: the logits after the path's tokens."""
+        ids = mx.array([t for t, _e in path])
+        def lps(lg, first):
+            lg = mx.concatenate([first, lg[0, :-1]], axis=0)
+            return (mx.take_along_axis(lg, ids[:, None], axis=1)[:, 0] - mx.logsumexp(lg, axis=-1)).astype(mx.float32)
+        total = lps(out, self._ctx_logits)
+        if mout is not None:
+            total = total + mix_w * lps(mout, self.mix.ctx_logits)
+        total = float(mx.sum(total))
+        q = 0
+        for t, e in path:
+            ends, tids, abs_, _f, _r = edges_at(q)
+            hit = np.nonzero((ends == e) & (tids == t))[0]
+            total -= float(abs_[hit[0]]) if len(hit) else 0.0
+            q = e
+        return total
+
     def _fork_cache(self, idx, steps):
         return _fork(self.model, self._ctx_cache, idx, steps)
 
@@ -375,13 +394,15 @@ class LLMEngine:
                 c.keys = c.keys[idx]
                 c.values = c.values[idx]
 
-    def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True):
+    def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True, prefixes=None):
         """Candidates for `keys`, best first; their token paths are left in `self.paths` (text -> path).
 
         beam: overrides the beam width; a tuple is the width of each step (the last one for the steps after). mix: False skips the mixed-in model.
         prefix: a path [(token_id, key_end), ...] to start from instead of the empty sentence (fed in one
           forward per model); for the quick first guess, the previous keystroke's best candidate minus its
           last token.
+        prefixes: several such paths (7D.3): one search from each, the paths' own scores counted, the finished ones merged;
+          instead of `prefix`.
         stop: called between beam steps; when it returns True the search is dropped and None returned.
         eos: False finishes a hypothesis as soon as it has consumed all keys, without the extra step that
           scores the end of the sentence (fine-tuned models only; base models never score it).
@@ -400,7 +421,17 @@ class LLMEngine:
             if len(page) >= k and all(_gb2312(t) for t in page[:k]):  # else page is short: the search comes next
                 return page[:k]
             self.paths = {}
-        found = self._search(context, keys, k, beam, mix, prefix, stop, eos, fixes=True)
+        if prefixes:
+            found = []
+            for pre in prefixes:
+                more = self._search(context, keys, k, beam, mix, pre, stop, eos, fixes=True, score_prefix=True)
+                if more is None:
+                    return None
+                found += more
+            found.sort(key=lambda f: f[:3], reverse=True)
+            prefix = prefixes[0]
+        else:
+            found = self._search(context, keys, k, beam, mix, prefix, stop, eos, fixes=True)
         if found and self.keys_in_prompt:
             # a fixed reading of a text the typed keys also read as typed stays, and is no reason to search again
             found = [f if not f[3] or not self._reads(f[1], keys) else (*f[:3], ()) for f in found]
@@ -501,7 +532,8 @@ class LLMEngine:
                 return False
         return len(keys) in ends
 
-    def _search(self, context, keys, k, beam, mix, prefix, stop, eos, fixes, alts=None, prompt_keys=None):
+    def _search(self, context, keys, k, beam, mix, prefix, stop, eos, fixes, alts=None, prompt_keys=None,
+                score_prefix=False):
         """The beam search of convert: finished hypotheses (score, text, path, fixes to the keys) best first,
         or None when `stop` dropped it. `fixes`: readings that need fixes too (`alts`: extra readings only).
         The keys in the prompt are `prompt_keys`, by default `keys`."""
@@ -554,11 +586,15 @@ class LLMEngine:
             path = tuple(prefix)
             cache = self._fork_cache(mx.array([0]), len(path) + n + 2)
             ptoks = mx.array([t for t, _e in path])[None]
-            logits = self.model(ptoks, cache=cache)[:, -1, :]
+            out = self.model(ptoks, cache=cache)
+            logits = out[:, -1, :]
+            mout = None
             if mix_w:
                 mix_cache = self.mix.fork(mx.array([0]), len(path) + n + 2)
-                mix_logits = self.mix.model(ptoks, cache=mix_cache)[:, -1, :]
-            active = [(0.0, "".join(self.tok_text[t] for t, _e in path), path[-1][1], path, (), ())]
+                mout = self.mix.model(ptoks, cache=mix_cache)
+                mix_logits = mout[:, -1, :]
+            start = self._path_score(path, out, mout, mix_w, edges_at, n) if score_prefix else 0.0
+            active = [(start, "".join(self.tok_text[t] for t, _e in path), path[-1][1], path, (), ())]
         finished = []
         for _step in range(n + 1):
             if stop and stop():
