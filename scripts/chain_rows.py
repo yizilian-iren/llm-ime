@@ -38,6 +38,14 @@ def main():
     eng.convert("", "nihao", k=1)
     variants = [(r, e) for e in map(int, a.every.split(",")) for r in map(int, a.rows.split(","))]
     ok, ms = collections.defaultdict(list), collections.defaultdict(list)
+    # kernels compile at run time on MLX's CUDA backend: every variant's shapes once before the first one counts
+    for r in [r for r in items if (keys_of(r, a.forms.split(",")[0]) or "")[10:]][:4]:
+        keys = keys_of(r, a.forms.split(",")[0])
+        for rows, every in variants:
+            s = session(eng, beam=a.beam)
+            s.prefix_rows, s.prefix_merge = rows, a.merge
+            for j in range(1, len(keys) + 1):
+                s._quick(r["context"], keys[:j])
     for form in a.forms.split(","):
         for r in items:
             keys = keys_of(r, form)
