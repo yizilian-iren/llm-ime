@@ -13,7 +13,7 @@ Typing only initials in an editor; space enters the sentence ([mp4](assets/demo/
 ## What it does
 
 - **Initials, full pinyin or a mix of both**: `nh` → 你好, `zgwtwmmtztl` → 这个问题我们明天再讨论. No mode to switch.
-- **Reads the context**: the same keys give different sentences after different text. Fine-tuning on chat-style data made up for the base model's weakness when there is no context.
+- **Reads the context**: the same keys give different sentences after different text. With no context at all (full pinyin, P@1) zero-shot gets 43.1; fine-tuning on chat-style data alone makes up part of it (53.9), and scoring together with the base model makes up most (71.4).
 - **Forgives typos**: two adjacent keys swapped (`zhognguo` → 中国), a key too many, a key missing, or the key next to the right one (`kanyuix` → 看一下) still read right.
 - **Learns your words**: picked candidates go into a word list on the Mac and come first next time. Once a week the model is retrained with a LoRA on the sentences you typed and picked that week, and swapped in only if it scores better.
 - **Doesn't keep you waiting**: every key gets one quick answer (p50 46 ms for 1–3 keys, 69 ms for 4–8 keys, 68 ms for 9 or more, from real typing on an M3 MacBook Air); after a short pause the engine adds further candidates as later pages.
@@ -40,7 +40,7 @@ flowchart LR
 ```
 
 - **Input method (`shell/`)**: a Swift app on InputMethodKit. It handles the candidate window, paging, entering the picked text and the typing log. It builds with the Command Line Tools' `swiftc` alone, no Xcode (`shell/build.sh`).
-- **Engine service (`ime/server.py`)**: takes a request per key, drops stale ones and answers only the newest. Each answer comes in two stages: `quick` (a short search) right away, then `full` (a beam search over the whole sentence).
+- **Engine service (`ime/server.py`)**: takes a request per key, drops stale ones and answers only the newest. By default each key gets one answer, `quick` (a short search), and after a short pause further candidates are added as later pages; the menu item 两遍计算 switches back to two passes, `quick` right away and then `full` (a beam search over the whole sentence).
 - **Conversion (`ime/llm.py`)**: every token in the model's vocabulary made only of Han characters is indexed in a trie by its characters' readings. The beam search uses this trie to extend only the tokens that fit the typed keys. All beams run as one batch, and the context's KV cache is reused.
 
 ## Model and training
@@ -62,7 +62,7 @@ The eval set is 892 sentences (592 written by the user + 300 from public data), 
 | Initials | 3.1 | 11.1 | 10.8 | **18.4** |
 | Mixed | 13.9 | 24.9 | 20.7 | **38.1** |
 
-The table is the whole-sentence search (all keys, top 5 candidates), not the quick answer typing shows first.
+The table is the whole-sentence search (all keys, the first candidate), not the quick answer typing shows first.
 
 - Context matters most. Even zero-shot, 16+ characters of context took P@1 on initials from 2.7% to 23.1%. The n-gram model cannot use context.
 - Long sentences in initials alone carry too little information, and every method scores low on them. In real typing a sentence goes in piece by piece, so the engine also offers candidates for the start of the keys, which can be picked on their own.
