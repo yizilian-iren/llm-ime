@@ -16,7 +16,7 @@ Typing only initials in an editor; space enters the sentence ([mp4](assets/demo/
 - **Reads the context**: the same keys give different sentences after different text. Fine-tuning on chat-style data made up for the base model's weakness when there is no context.
 - **Forgives typos**: two adjacent keys swapped (`zhognguo` → 中国), a key too many, a key missing, or the key next to the right one (`kanyuix` → 看一下) still read right.
 - **Learns your words**: picked candidates go into a word list on the Mac and come first next time. Once a week the model is retrained with a LoRA on the sentences you typed and picked that week, and swapped in only if it scores better.
-- **Doesn't keep you waiting**: every key gets a quick answer first (p50 about 50 ms on an M3 MacBook Air), then the answer of the full sentence search (p50 about 80 ms for 4–8 keys).
+- **Doesn't keep you waiting**: every key gets one quick answer (p50 46 ms for 1–3 keys, 69 ms for 4–8 keys, 68 ms for 9 or more, from real typing on an M3 MacBook Air); after a short pause the engine adds further candidates as later pages.
 
 ## Architecture
 
@@ -56,11 +56,13 @@ flowchart LR
 
 The eval set is 892 sentences (592 written by the user + 300 from public data), each typed three ways: full pinyin, initials and mixed. The metric is P@1 (how often the first candidate is right, %).
 
-| Input | n-gram + Viterbi (own baseline) | Qwen3-0.6B zero-shot | Fine-tuned (v02) |
-|---|---|---|---|
-| Full pinyin | 44.6 | 57.3 | **79.1** |
-| Initials | 3.1 | 11.1 | **18.4** |
-| Mixed | 13.9 | 24.9 | **38.1** |
+| Input | n-gram + Viterbi (own baseline) | Qwen3-0.6B zero-shot | Fine-tuned alone | Fine-tuned + base (`mix`, v02) |
+|---|---|---|---|---|
+| Full pinyin | 44.6 | 57.3 | 57.2 | **79.1** |
+| Initials | 3.1 | 11.1 | 10.8 | **18.4** |
+| Mixed | 13.9 | 24.9 | 20.7 | **38.1** |
+
+The table is the whole-sentence search (all keys, top 5 candidates), not the quick answer typing shows first.
 
 - Context matters most. Even zero-shot, 16+ characters of context took P@1 on initials from 2.7% to 23.1%. The n-gram model cannot use context.
 - Long sentences in initials alone carry too little information, and every method scores low on them. In real typing a sentence goes in piece by piece, so the engine also offers candidates for the start of the keys, which can be picked on their own.
@@ -68,7 +70,7 @@ The eval set is 892 sentences (592 written by the user + 300 from public data), 
 
 ## What was hard
 
-- **P@1 on initials started at 11%.** The zero-shot model leaned towards Wikipedia-style text and struggled with short chat sentences; rewording the prompt hardly helped. Fine-tuning on chat-style data with the keys in the prompt brought full pinyin from 57 to 79 and initials from 11 to 18.
+- **P@1 on initials started at 11%.** The zero-shot model leaned towards Wikipedia-style text and struggled with short chat sentences; rewording the prompt hardly helped. Fine-tuning on chat-style data with the keys in the prompt did not lift P@1 by itself (full pinyin 57.3 zero-shot, 57.2 fine-tuned; mixed even fell from 24.9 to 20.7). Scoring each sentence with the fine-tuned and the base model together (`mix`) brought full pinyin from 57 to 79 and initials from 11 to 18.
 - **Merging into one model failed twice.** To make inference faster I tried distilling the two models' combined score into one model (r4), and a format with each character right after its own keys (r4b). Neither caught up with v02. r4b put no loss on the keys, so splitting syllables wrong cost nothing, and I only found out after 8 hours of training. Since then every new format gets a few hundred steps and a 20-sentence eval before a full run.
 - **The base model must score with its own tokenization.** Fed one character per token, it underrates characters it normally writes inside a longer token (还 in 还有).
 - **A typo-corrected reading needs a search with the corrected keys.** The fine-tuned model scores against the keys in its prompt, so a corrected reading scored under the keys as typed always loses. Corrected readings are added, in beam rows of their own, only for keys that cannot be read as typed, so they don't push out abbreviations.
