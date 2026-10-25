@@ -36,7 +36,7 @@ def main():
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # model paths are repo-relative
     out = {"n": len(items)}
     for m in a.model:
-        eng = engines.load("v02", model=m)
+        eng = engines.load_capped("v02", model=m)
         t, top1, top5 = time.time(), 0, 0
         for s in items:
             c = eng.convert(s["context"], s["keys"], k=5)

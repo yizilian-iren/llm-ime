@@ -77,3 +77,17 @@ def load(name: str, **kw) -> Engine:
                    typo_penalty=4.0, swap_retries=2)  # yiijingshi 已经是, kanyuix 看一下, shibnush 是不是 (5B.8)
         return LLMEngine(**{**cfg, **kw})
     raise ValueError(f"unknown engine {name}")
+
+
+def load_capped(name: str, **kw) -> Engine:
+    """`load` for the eval and bench scripts: MLX's buffer cache capped first (LLMIME_CACHE_MB, default 512; 0 leaves it).
+    Every new shape adds buffers to the cache: 17 GB on M4 in one chain_rows run, 8.7 GB in quick_vs_full (7D.4). The
+    engine service does not use this."""
+    mb = int(os.environ.get("LLMIME_CACHE_MB", "512"))
+    if mb:
+        try:
+            import mlx.core as mx
+            mx.set_cache_limit(mb << 20)
+        except ImportError:
+            pass
+    return load(name, **kw)

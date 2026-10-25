@@ -49,7 +49,7 @@ def main():
     res = {}
     for m in a.model:
         path, _, opt = m.partition("@")  # models/r6-4bit@idiom_bonus=3: engine options after @, comma separated
-        eng = engines.load("v02", model=path, **{k: float(v) for k, v in (o.split("=") for o in opt.split(",") if o)})
+        eng = engines.load_capped("v02", model=path, **{k: float(v) for k, v in (o.split("=") for o in opt.split(",") if o)})
         for kind, ws in sets.items():
             for ini in (False, True):
                 for w in ws:

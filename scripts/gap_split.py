@@ -31,7 +31,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--forms", default="full,initials,mixed")
     a = ap.parse_args()
-    eng = engines.load("v02")
+    eng = engines.load_capped("v02")
     allitems = [json.loads(line) for line in open("data/private/eval.jsonl")]
     pub = [r for r in allitems if r["src"] == "public"]
     sets = {"eval first 100": allitems[:100], "public first 100": pub[:100], "public first 200": pub[:200]}

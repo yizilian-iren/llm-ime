@@ -43,7 +43,7 @@ def main():
     ap.add_argument("--engine", default="v02")
     a = ap.parse_args()
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    eng = engines.load(a.engine)
+    eng = engines.load_capped(a.engine)
     failed = 0
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "words.json")

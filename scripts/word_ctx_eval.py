@@ -204,7 +204,7 @@ def main():
     cases = [(c, w, keys(w)) for c, w in CASES]
     base_out = {}
     for v in a.variants.split(","):
-        eng = engines.load("v02", model=a.model)
+        eng = engines.load_capped("v02", model=a.model)
         patch(eng, v, common, pairs)
         _, _, cs = score(eng, cases)
         print(f"{v:8} cases: " + " | ".join(f"{c}+{k}: {' '.join(x)}" for (c, _w, k), x in zip(cases, cs)), flush=True)

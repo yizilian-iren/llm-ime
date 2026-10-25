@@ -42,7 +42,7 @@ def main():
     ap.add_argument("--forms", default="full,initials,mixed")
     ap.add_argument("--form", default="full")
     a = ap.parse_args()
-    eng = engines.load("v02")
+    eng = engines.load_capped("v02")
     items = [json.loads(line) for line in open("data/private/eval.jsonl")]
     eng.convert("", "nihao", k=1)
     if a.mode == "acc":

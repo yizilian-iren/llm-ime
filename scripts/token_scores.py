@@ -59,8 +59,8 @@ def main():
     a = ap.parse_args()
     for m in a.model:
         base_only = "qwen3-0.6b-base" in m
-        eng = engines.load("v02", model=m, mix="models/qwen3-0.6b-base-4bit") if not base_only else \
-            engines.load("v02", model="models/r6-4bit")
+        eng = engines.load_capped("v02", model=m, mix="models/qwen3-0.6b-base-4bit") if not base_only else \
+            engines.load_capped("v02", model="models/r6-4bit")
         if base_only:
             eng.model = eng.mix.model  # only the base model is read
         for ctx in a.context or [""]:

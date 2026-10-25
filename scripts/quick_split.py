@@ -84,7 +84,7 @@ def session(eng, **quick):
 
 
 def run_split(a):
-    eng = engines.load("v02")
+    eng = engines.load_capped("v02")
     timed = Timed(eng)
     items = [json.loads(line) for line in open(a.eval) if not a.src or json.loads(line)["src"] == a.src][: a.items]
     eng.convert("", "nihao", k=1)
@@ -126,7 +126,7 @@ def run_split(a):
 
 
 def run_paced(a):
-    eng = engines.load("v02")
+    eng = engines.load_capped("v02")
     items = [json.loads(line) for line in open(a.eval) if not a.src or json.loads(line)["src"] == a.src][: a.items]
     eng.convert("", "nihao", k=1)
     rng = random.Random(1)

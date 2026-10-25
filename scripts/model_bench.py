@@ -37,7 +37,7 @@ def main():
     ap.add_argument("--b-opt", action="append", default=["english_penalty=0.5"])
     ap.add_argument("--rounds", type=int, default=1, help="the items again, the order rotated by one")
     a = ap.parse_args()
-    engs = [engines.load(a.engine, model=a.a, **opts(a.a_opt)), engines.load(a.engine, model=a.b, **opts(a.b_opt))]
+    engs = [engines.load_capped(a.engine, model=a.a, **opts(a.a_opt)), engines.load_capped(a.engine, model=a.b, **opts(a.b_opt))]
     items = [json.loads(line) for line in open("data/private/eval.jsonl")][: a.items]
     for e in engs:  # warm up
         e.convert(items[0]["context"], items[0][a.form][:3], k=5)

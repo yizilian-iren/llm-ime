@@ -109,7 +109,7 @@ def main():
             done[r["i"]] = r["keys"]
     todo = [i for i in range(len(comps)) if i not in done]
     if todo:
-        eng = engines.load("v02")
+        eng = engines.load_capped("v02")
         typos = eng.typos
         timed = Timed(eng)
         eng.convert("", "nihao", k=1)

@@ -70,7 +70,7 @@ def main():
             done[r["i"]] = r["runs"]
     todo = [i for i in range(len(comps)) if i not in done]
     if todo:
-        eng = engines.load("v02")
+        eng = engines.load_capped("v02")
         eng.convert("", "nihao", k=1)
         rec, spans = db.Rec(), db.stoppable(eng)
         ses = Session(eng, rec, k=5, more=20, segments=True)  # one pass, as deployed

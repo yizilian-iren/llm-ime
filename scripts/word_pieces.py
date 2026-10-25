@@ -73,7 +73,7 @@ def main():
     res = {}
     for name, opt in (("base", {}), ("word_top", {"word_top": a.top})):
         wr.wait_idle()
-        eng = engines.load("v02", model=a.model, **opt)
+        eng = engines.load_capped("v02", model=a.model, **opt)
         res[name] = ([wr.convert(eng, c, k) for c, k, _w, _n in found], [wr.convert(eng, c, k) for c, k, _t in misses])
         del eng
     for name, (got, _m) in res.items():

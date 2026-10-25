@@ -48,7 +48,7 @@ def main():
             done[tuple(r["case"])] = r["cands"]
     todo = [c for c in cases if c not in done]
     if todo:
-        engs = {name: engines.load("v02", **kw) for name, kw in ENGINES.items()}
+        engs = {name: engines.load_capped("v02", **kw) for name, kw in ENGINES.items()}
         with open(a.progress, "a", encoding="utf-8") as f:
             last_check = time.time()
             for c in todo:

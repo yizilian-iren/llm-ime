@@ -21,7 +21,7 @@ def main():
     ap.add_argument("--items", type=int, default=40)
     ap.add_argument("--form", default="full", choices=["initials", "full", "mixed"])
     a = ap.parse_args()
-    eng = engines.load("v02")
+    eng = engines.load_capped("v02")
     items = [json.loads(line) for line in open("data/private/eval.jsonl")][: a.items]
     eng.convert("", "nihao", k=1)
     lat, same, n = {}, {"quick": [0, 0], "full": [0, 0]}, 0

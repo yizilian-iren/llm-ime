@@ -105,7 +105,7 @@ def main():
     for v in a.variants.split(","):
         wait_idle()
         name, _, opt = v.partition("@")  # base@word_top=30000,word_floor=2: engine options after @ (6B.7)
-        eng = engines.load("v02", model=a.model, **{k: float(x) for k, x in (o.split("=") for o in opt.split(",") if o)})
+        eng = engines.load_capped("v02", model=a.model, **{k: float(x) for k, x in (o.split("=") for o in opt.split(",") if o)})
         patch(eng, name, common, pairs)
         got = [convert(eng, c, k) for c, k, _t in misses]
         kept = sum(bool(x) and x[0] == t for (c, k, t), x in zip(ok, (convert(eng, c, k) for c, k, _t in ok)))
