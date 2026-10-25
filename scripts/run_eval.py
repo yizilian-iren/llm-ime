@@ -110,6 +110,11 @@ def main():
             opts[k] = int(v) if v.isdigit() else float(v)
         except ValueError:
             opts[k] = v
+    try:
+        import mlx.core as mx
+        mx.set_cache_limit(512 << 20)  # the many shapes fill the buffer cache: out of memory on a 24 GB 4090 (7B.4)
+    except ImportError:
+        mx = None
     eng = engines.load(a.engine, **opts)
     words = None
     if a.words:
@@ -133,6 +138,8 @@ def main():
             if keys is None:
                 continue
             cands = eng.convert(r["context"], keys, k=5)
+            if mx:
+                mx.clear_cache()
             if words:
                 plain = cands
                 cands = words.rerank(r["context"], keys, cands)
