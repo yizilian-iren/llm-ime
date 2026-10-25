@@ -15,6 +15,7 @@ besides the public examples.
 
 import argparse
 import collections
+import resource
 import json
 import os
 import sys
@@ -22,6 +23,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mlx.core as mx  # noqa: E402
+
 from ime import engine as engines  # noqa: E402
 from ime.userwords import UserWords  # noqa: E402
 from quick_split import session  # noqa: E402
@@ -80,6 +83,7 @@ def main():
             opts[k] = int(v) if v.isdigit() else float(v)
         except ValueError:
             opts[k] = v
+    mx.set_cache_limit(512 << 20)  # the run's many shapes would fill the buffer cache (8.7 GB, r9, 7B.4)
     eng = engines.load("v02", **opts)
     pub = [r for r in map(json.loads, open("data/private/eval.jsonl")) if r["src"] == "public"]
     items, rest = pub[: a.items], pub[a.items:]
@@ -117,6 +121,7 @@ def main():
             for j in range(1, len(keys) + 1):
                 quick = s._quick(ctx, keys[:j])
             full = s._convert(ctx, keys, k=5)
+            mx.clear_cache()
             q_ok, f_ok = bool(quick) and quick[0] == tgt, bool(full) and full[0] == tgt
             cells[form, cell(q_ok, f_ok)] += 1
             if q_ok and not f_ok:
@@ -167,6 +172,7 @@ def main():
         print("## the rerank by the test user words, full answer's first")
         for form in a.forms.split(","):
             print(f"{form:8s} " + "  ".join(f"{c} {n}" for (f, c), n in sorted(flipped.items()) if f == form))
+    print(f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**30:.1f} GB", file=sys.stderr)
     print("## examples (full form)")
     for e in shown:
         print("  ", *e)
