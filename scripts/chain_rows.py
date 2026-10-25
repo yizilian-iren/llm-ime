@@ -29,6 +29,7 @@ def main():
     ap.add_argument("--beam", type=int, default=12)
     ap.add_argument("--rows", default="1,2,3,5")
     ap.add_argument("--every", default="0")
+    ap.add_argument("--merge", action="store_true", help="the rows as one beam from their common start")
     a = ap.parse_args()
     mx.set_cache_limit(512 << 20)  # the run's many shapes would fill the buffer cache (17 GB at --n 100)
     eng = engines.load("v02")
@@ -44,7 +45,7 @@ def main():
                 continue
             for rows, every in variants:
                 s = session(eng, beam=a.beam)
-                s.prefix_rows = rows
+                s.prefix_rows, s.prefix_merge = rows, a.merge
                 for j in range(1, len(keys) + 1):
                     if every and j >= 10 and (j - 10) % every == 0:
                         s._last = None

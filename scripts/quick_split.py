@@ -78,7 +78,7 @@ class Timed:
 def session(eng, **quick):
     s = Session.__new__(Session)
     s.engine, s.words, s.k = eng, None, 5
-    s.prefix_rows = 1
+    s.prefix_rows, s.prefix_merge = 1, False
     s.quick, s.prefix_keys, s._last = {**dict(k=3, beam=3, mix=True, eos=False), **quick}, 10, None
     return s
 
