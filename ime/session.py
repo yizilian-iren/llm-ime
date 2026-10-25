@@ -47,6 +47,8 @@ from ime import zh_en
 
 
 class Session:
+    prefix_rows, prefix_merge = 3, True  # for the scripts that build a Session without __init__
+
     def __init__(self, engine, on_result, k=5, quick=None, on_error=None, more=None, more_delay=0.25, segments=False,
                  words=None, prefix_keys=10, full_delay=0.0, two_pass=False, prefix_rows=3, prefix_merge=True):
         self.engine, self.on_result, self.k, self.words = engine, on_result, k, words
