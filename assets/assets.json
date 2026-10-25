@@ -194,5 +194,14 @@
   "session": "引擎 0.6",
   "item": "6B.6",
   "added": "2026-10-20"
+ },
+ "lab4090b:~/llm-ime-7b4/runs/r9/final": {
+  "what": "r9 final checkpoint (Qwen3.5-0.8B-Base full fine-tune, format ctx_first+quad, 1.5G); M4 has it as models/r9-hf and models/r9-4bit; not deployed",
+  "kind": "weights",
+  "source": "scripts/train.py on lab4090b, data from scripts/gen_train.py (LCCC, wiki, the user's WeChat messages at ~5%; the data deleted after training, D-005)",
+  "license": "Qwen3.5-0.8B-Base fine-tune (Apache-2.0 base)",
+  "session": "引擎 0.7 三",
+  "item": "7B.4",
+  "added": "2026-10-26"
  }
 }
