@@ -1,6 +1,6 @@
 """7D.1: where the full answer's first candidate is worse than the quick guess's, on the same sentences.
 
-  python scripts/quick_vs_full.py [--items 200] [--forms full,initials,mixed] [--examples 5] [--words-n 50]
+  python scripts/quick_vs_full.py [--items 200] [--forms full,initials,mixed] [--examples 5] [--words-n 50] [--opt k=v]
 
 Public eval items only (their sentences may be printed). Each key string is typed one key at a time through a Session's
 `_quick` (its own last best, as the quick guess starts from it for 10 keys or more; no full search between keys), the
@@ -69,10 +69,18 @@ def main():
     ap.add_argument("--examples", type=int, default=5)
     ap.add_argument("--words-n", type=int, default=50)
     ap.add_argument("--whole-only", action="store_true", help="only the learned-word check (step 4), not the cells")
+    ap.add_argument("--opt", action="append", default=[], help="v02 option key=value (model=models/r9-4bit, 7B.4)")
     a = ap.parse_args()
     if a.whole_only:
         a.items = 0
-    eng = engines.load("v02")
+    opts = {}
+    for o in a.opt:
+        k, v = o.split("=", 1)
+        try:
+            opts[k] = int(v) if v.isdigit() else float(v)
+        except ValueError:
+            opts[k] = v
+    eng = engines.load("v02", **opts)
     pub = [r for r in map(json.loads, open("data/private/eval.jsonl")) if r["src"] == "public"]
     items, rest = pub[: a.items], pub[a.items:]
     words = None
