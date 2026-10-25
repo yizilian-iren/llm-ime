@@ -169,10 +169,11 @@ def serve(a):
 class RemoteEngine:
     """An Engine: `local`'s, with its model work asked of the service at host:port first (see the module's doc)."""
 
-    def __init__(self, local, host, port=DEFAULT_PORT, token="", quick_ms=150, full_ms=600, backoff_s=20.0,
+    def __init__(self, local, host, port=DEFAULT_PORT, token="", quick_ms=150, full_ms=600, backoff_s=20.0, quick_beam=4,
                  connect_s=1.0, retry_s=5.0):
         self.local, self.host, self.port, self.token = local, host, int(port), token
         self.quick_ms, self.full_ms, self.backoff_s = quick_ms, full_ms, backoff_s
+        self.quick_beam = quick_beam  # a search this wide or narrower is a quick guess: Session's quick beam (7D.3: 4)
         self.connect_s, self.retry_s = connect_s, retry_s
         self.on = True  # the menu's 远程计算 (op "remote")
         self.paths = {}
@@ -300,9 +301,9 @@ class RemoteEngine:
             pass
         threading.Timer(5, lambda: self._answers.pop(i, None)).start()  # its late answer, if any
 
-    def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True):
-        if self.remote_ok and keys:
-            quick = (beam or 99) <= 3
+    def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True, prefixes=None):
+        if self.remote_ok and keys and not prefixes:
+            quick = max(beam if isinstance(beam, (tuple, list)) else [beam or 99]) <= self.quick_beam
             ans = self._ask({"op": "convert", "context": context, "keys": keys, "k": k, "beam": beam, "mix": mix,
                              "prefix": [list(x) for x in prefix] if prefix else None, "eos": eos},
                             self.quick_ms if quick else self.full_ms, stop)
@@ -313,7 +314,8 @@ class RemoteEngine:
                 self.last_by = "remote"
                 self.counts["remote"] += 1
                 return ans["cands"]
-        out = self.local.convert(context, keys, k=k, beam=beam, mix=mix, prefix=prefix, stop=stop, eos=eos)
+        out = self.local.convert(context, keys, k=k, beam=beam, mix=mix, prefix=prefix, stop=stop, eos=eos,
+                                 **({"prefixes": prefixes} if prefixes else {}))
         self.paths = self.local.paths
         self.last_by = "local"
         self.counts["local"] += 1
