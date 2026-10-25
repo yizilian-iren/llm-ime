@@ -11,5 +11,5 @@ $SSH $GPU 'mkdir -p ~/llm-ime'
 rsync -a -e "$SSH" scripts/requirements-train.txt "$GPU:llm-ime/requirements-train.txt"
 $SSH $GPU 'set -e; cd ~/llm-ime
   [ -x .venv-train/bin/python ] || ~/.local/bin/uv venv -q --python 3.13 .venv-train
-  VIRTUAL_ENV=.venv-train ~/.local/bin/uv pip install -q -r requirements-train.txt
+  VIRTUAL_ENV=.venv-train ~/.local/bin/uv pip install -q --index-strategy unsafe-best-match -r requirements-train.txt
   .venv-train/bin/python -c "import torch; print(\"torch\", torch.__version__, \"cuda\", torch.cuda.is_available())"'

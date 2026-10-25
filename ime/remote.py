@@ -1,6 +1,6 @@
 """The engine's model work on another machine (7E.1, D-049): home4070's GPU, M3's own engine when it is slow or away.
 
-  python -m ime.remote serve --host 100.100.59.15 [--port 8771] [--token-file ~/.config/llm-ime/remote-token]
+  python -m ime.remote serve --host 100.78.154.84 [--port 8771] [--token-file ~/.config/llm-ime/remote-token]
 
 serve (on home4070, MLX's CUDA backend, scripts/install_remote4070.sh): the same engine (ime.engine.load "v02", the
 same models) answers convert / segments / score over TCP, one JSON object per line both ways, on the Tailscale

@@ -5,7 +5,7 @@
 #                                          restart it, or deploy, to take it up)
 #   scripts/install_remote4070.sh off      removes M3's remote.json (all on M3 again; the service stays)
 #
-# On home4070 (WSL, MLX's CUDA backend):
+# On home4070 (Ubuntu, MLX's CUDA backend):
 #   ~/llm-ime/.venv-mlx/                   python 3.12, mlx[cuda], mlx-lm, numpy, jieba, pypinyin, CUDA headers
 #   ~/llm-ime/cuda-home/include/           the pip CUDA packages' headers in one place (CUDA_HOME: MLX compiles
 #                                          kernels at run time, cached on disk)
@@ -19,7 +19,7 @@ set -e
 cd "$(dirname "$0")/.."
 SSH="ssh -o ClearAllForwardings=yes"
 GPU=home4070
-TS_IP=100.100.59.15  # home4070's Tailscale address (the WSL side)
+TS_IP=100.78.154.84  # home4070's Tailscale address (native Ubuntu since 2026-10-25, 7A.2)
 PORT=8771
 MODELS="r6-4bit qwen3-0.6b-base-4bit"
 RETRAIN="$HOME/Library/Application Support/llm-ime-retrain"
