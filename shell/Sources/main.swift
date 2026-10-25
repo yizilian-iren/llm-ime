@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let name = Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String ?? "LLMIME_Connection"
         server = IMKServer(name: name, bundleIdentifier: Bundle.main.bundleIdentifier)
         EngineClient.shared.onResult = { id, stage, cands, segs, by in
-            AppDelegate.active?.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs, by: by)
+            (InputController.owner(of: id) ?? AppDelegate.active)?.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs, by: by)
         }
         EngineClient.shared.onConnect = { AppDelegate.active?.engineConnected() }
         EngineClient.shared.start()

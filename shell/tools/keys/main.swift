@@ -135,7 +135,7 @@ let ctl = InputController(server: nil, delegate: nil, client: nil)!
 ctl.testClient = client
 AppDelegate.active = ctl
 EngineClient.shared.onResult = { id, stage, cands, segs, by in
-    ctl.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs, by: by)
+    (InputController.owner(of: id) ?? AppDelegate.active)?.engineAnswered(id: id, stage: stage, candidates: cands, segments: segs, by: by)
 }
 EngineClient.shared.onConnect = { ctl.engineConnected() }
 EngineClient.shared.start()
@@ -540,6 +540,16 @@ press(["space"]); wait(0.1)
 check(client.text == "F:xy", "keys sent again on connect, answered: \(client.text)")
 ctl.engineConnected()  // nothing composed: nothing sent
 check(client.text == "F:xy", "no keys, no resend: \(client.text)")
+client.text = ""
+
+// 7A.1: answers go to the controller that asked, even when another one was activated after it
+let other = InputController(server: nil, delegate: nil, client: nil)!
+other.testClient = FakeClient()
+client.text = ""
+press(letters("xy")); AppDelegate.active = other; wait(0.5)
+press(["space"]); wait(0.1)
+check(client.text == "F:xy", "answers reach the asking controller, not the last activated: \(client.text)")
+AppDelegate.active = ctl
 client.text = ""
 
 unlink(sock)

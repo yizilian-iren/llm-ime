@@ -57,6 +57,18 @@ final class InputController: IMKInputController {
 
     // 7A.1: what this controller saw since its last activateServer, for the events file (times and counts only)
     private var activeApp: String?
+
+    /// Who asked for each request (7A.1): the answer goes back to that controller, not to the last one activated.
+    /// IMK can activate another app's controller after this one (05:34:24 on 10-26: WeChat's, deactivated 1 ms
+    /// later), and answers sent to it were dropped: the keys showed as letters with no candidates until a switch.
+    private final class Owner { weak var controller: InputController?; init(_ c: InputController) { controller = c } }
+    private static var owners: [Int: Owner] = [:]
+    static func owner(of id: Int) -> InputController? { owners[id]?.controller }
+    private func sent(_ id: Int) -> Int {
+        Self.owners[id] = Owner(self)
+        Self.owners[id - 200] = nil
+        return id
+    }
     private var activatedAt: TimeInterval?
     private var keysSinceActivate = 0
     private var noActivateLogged = false
@@ -342,14 +354,14 @@ final class InputController: IMKInputController {
             stage = "english"
             answeredKeys = keys.count
             if EngineClient.shared.connected {
-                requestId = EngineClient.shared.type(context: context ?? Self.history, keys: keys, english: true)
+                requestId = sent(EngineClient.shared.type(context: context ?? Self.history, keys: keys, english: true))
             }
             show(client, fade: false)
             return
         }
         if keys.count > longest.count { (longest, longestFirst) = (keys, "") }
         let ctx = context ?? String(Self.history.suffix(64))
-        requestId = EngineClient.shared.type(context: ctx, keys: keys)
+        requestId = sent(EngineClient.shared.type(context: ctx, keys: keys))
         comp?.context = ctx
         comp?.appText = context != nil
         comp?.sent[requestId] = (keys.count, Date())
