@@ -21,8 +21,8 @@ RemoteEngine (on M3, ime.server with ~/Library/Application Support/llm-ime/remot
 an Engine that asks the remote first and the local engine when the remote is off (the menu's 远程计算, op "remote"
 from the shell), not connected or on another model. A convert slower there than `quick_ms` / `full_ms` is raced
 (7E.2): the local engine starts on it, the remote's search goes on, and the first answer is used (the remote's stops
-the local search between its beam steps; the local one cancels the remote's). Only `fails` timeouts or errors in a
-row leave the remote alone for `backoff_s`: one timeout is mostly the remote's tail, and M3's own engine is at times
+the local search between its beam steps; the local one cancels the remote's). Only `fails` errors or races the
+local engine won in a row leave the remote alone for `backoff_s`: one timeout is mostly the remote's tail, and M3's own engine is at times
 slow for minutes (10-23..26: local p50 0.5-3 s while the remote answered in 40-65 ms).
 Everything else (prefixes, whole_pinyin, ...) is the local engine's. `last_by`: "remote" / "local", for the shell's
 typing log.
@@ -291,26 +291,27 @@ class RemoteEngine:
             if self._sock is not s:  # the connection broke: local, without counting it
                 return None
             self.counts["timeouts"] += 1
-            self._failed_once(f"remote slower than {ms} ms")
+            log(f"remote slower than {ms} ms")
             if local is None:
                 self._cancel(s, i)
+                self._failed_once()
                 return None
             return self._race(s, i, stop, local)
         if "error" in ans:  # broken there (7E.1: MLX's CUDA graph cache)
             self.counts["errors"] += 1
-            self._failed_once(f"remote error ({ans['error']})")
+            log(f"remote error ({ans['error']})")
+            self._failed_once()
             return None
         self._failed = 0
         return ans
 
-    def _failed_once(self, why):
+    def _failed_once(self):
+        """A timeout the remote lost (or one not raced) or an error: `fails` in a row leave it alone for backoff_s."""
         self._failed += 1
         if self._failed >= self.fails:
             self._failed = 0
             self._until = time.monotonic() + self.backoff_s
-            log(f"{why}, {self.fails} in a row: local for {self.backoff_s:.0f} s")
-        else:
-            log(why)
+            log(f"{self.fails} timeouts / errors in a row: local for {self.backoff_s:.0f} s")
 
     def _usable(self, i):
         ans = self._answers.get(i)
@@ -319,14 +320,15 @@ class RemoteEngine:
     def _race(self, s, i, stop, local):
         """The local engine on the request the remote was too slow for, while the remote goes on with it (7E.2)."""
         out = local(lambda: (stop is not None and stop()) or self._usable(i))
-        if self._usable(i):  # the remote's came first (or while the local one finished its last step)
+        if self._usable(i):  # the remote's came first (or while the local one finished its last step): not a failure
             self.counts["raced_remote"] += 1
+            self._failed = 0
             return self._answers.pop(i), "remote"
-        if stop and stop():
-            self._cancel(s, i)
-            return "stopped"
         self._cancel(s, i)
+        if stop and stop():  # a newer key: neither won, nothing counted
+            return "stopped"
         self.counts["raced_local"] += 1
+        self._failed_once()
         return out, "local"
 
     def _cancel(self, s, i):

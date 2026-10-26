@@ -114,6 +114,13 @@ check(f"raced: the remote's answer, the local search stopped ({ms:.0f} ms)",
 local.delay = 0.0
 r.convert("", "ni")  # in time: the timeouts in a row start again
 
+far.delay, local.delay = 0.15, 0.6  # the remote late but first, three times: no backoff
+for _ in range(3):
+    r.convert("", "nihao", k=5, beam=3)
+check("late remote answers that win the race are no failures", r.remote_ok and r._failed == 0
+      and r.counts["raced_remote"] == 4)
+far.delay, local.delay = 0.0, 0.0
+
 far.delay = 0.2
 for _ in range(2):
     r.convert("", "ni", beam=3)
@@ -169,6 +176,10 @@ check("远程计算 off: local", r.convert("", "ni") == ["near:ni"])
 r.set_on(True)
 check("on again: remote", r.convert("", "ni") == ["far:ni"])
 
+try:
+    srv.shutdown(socket.SHUT_RDWR)  # Linux: close() alone leaves a blocked accept() taking connections
+except OSError:
+    pass
 srv.close()
 r._sock.shutdown(socket.SHUT_RDWR)  # the service going away
 check("disconnect seen", connected(r, False))

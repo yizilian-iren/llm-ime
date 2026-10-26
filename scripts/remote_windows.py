@@ -31,14 +31,16 @@ def line(name, xs):
 
 
 def timeouts(day):
-    """(time, window s) of each timeout: BACKOFF_S when it left the remote alone ("local for"; before 7E.2 every
-    timeout did), else RACE_S (7E.2: raced, the remote asked again from the next key)."""
-    out = []
+    """(time, window s) of each timeout: BACKOFF_S when it left the remote alone (a "local for" line that second; before
+    7E.2 every timeout did), else RACE_S (7E.2: raced, the remote asked again from the next key)."""
+    out, backoffs = [], set()
     for l in open(ENGINE_LOG, encoding="utf-8"):
+        if l.startswith(day) and "local for" in l:
+            backoffs.add(l[:19])
         if l.startswith(day) and "remote slower" in l:
-            t = datetime.datetime.strptime(l[:19], "%Y-%m-%d %H:%M:%S").timestamp()
-            out.append((t, BACKOFF_S if "local for" in l else RACE_S))
-    return out
+            out.append((l[:19], "local for" in l))
+    return [(datetime.datetime.strptime(t, "%Y-%m-%d %H:%M:%S").timestamp(), BACKOFF_S if b or t in backoffs
+             else RACE_S) for t, b in out]
 
 
 def answers(day):
