@@ -19,7 +19,11 @@ All model work runs on one worker thread, newest request first. Nothing the user
 
 RemoteEngine (on M3, ime.server with ~/Library/Application Support/llm-ime/remote.json: {"host", "port", "token"}):
 an Engine that asks the remote first and the local engine when the remote is off (the menu's 远程计算, op "remote"
-from the shell), not connected, on another model, or slower than `quick_ms` / `full_ms` (then local for `backoff_s`).
+from the shell), not connected or on another model. A convert slower there than `quick_ms` / `full_ms` is raced
+(7E.2): the local engine starts on it, the remote's search goes on, and the first answer is used (the remote's stops
+the local search between its beam steps; the local one cancels the remote's). Only `fails` timeouts or errors in a
+row leave the remote alone for `backoff_s`: one timeout is mostly the remote's tail, and M3's own engine is at times
+slow for minutes (10-23..26: local p50 0.5-3 s while the remote answered in 40-65 ms).
 Everything else (prefixes, whole_pinyin, ...) is the local engine's. `last_by`: "remote" / "local", for the shell's
 typing log.
 """
@@ -170,15 +174,17 @@ class RemoteEngine:
     """An Engine: `local`'s, with its model work asked of the service at host:port first (see the module's doc)."""
 
     def __init__(self, local, host, port=DEFAULT_PORT, token="", quick_ms=150, full_ms=600, backoff_s=20.0, quick_beam=4,
-                 connect_s=1.0, retry_s=5.0):
+                 connect_s=1.0, retry_s=5.0, fails=3):
         self.local, self.host, self.port, self.token = local, host, int(port), token
         self.quick_ms, self.full_ms, self.backoff_s = quick_ms, full_ms, backoff_s
+        self.fails = fails  # timeouts / errors in a row before backing off (7E.2)
         self.quick_beam = quick_beam  # a search this wide or narrower is a quick guess: Session's quick beam (7D.3: 4)
         self.connect_s, self.retry_s = connect_s, retry_s
         self.on = True  # the menu's 远程计算 (op "remote")
         self.paths = {}
         self.last_by = "local"
-        self.counts = {"remote": 0, "local": 0, "timeouts": 0, "errors": 0}
+        self.counts = {"remote": 0, "local": 0, "timeouts": 0, "errors": 0, "raced_remote": 0, "raced_local": 0}
+        self._failed = 0  # timeouts / errors in a row
         self._sock = None
         self._lock = threading.Lock()  # sending
         self._cond = threading.Condition()
@@ -256,9 +262,10 @@ class RemoteEngine:
         except OSError:
             pass
 
-    def _ask(self, msg, ms, stop=None):
-        """The service's answer to msg, None if it took longer than ms (or the connection broke): then the local
-        engine answers; "stopped" when stop() said so while waiting."""
+    def _ask(self, msg, ms, stop=None, local=None):
+        """The service's answer to msg, None if it took longer than ms (or the connection broke, or it failed there):
+        then the local engine answers; "stopped" when stop() said so while waiting. local(stop): the local engine's
+        answer, raced against the remote's after ms (7E.2); then (answer, "remote" / "local") is returned."""
         s = self._sock
         if s is None:
             return None
@@ -281,18 +288,46 @@ class RemoteEngine:
                 self._cond.wait(min(left, 0.002) if stop else left)
             ans = self._answers.pop(i, None)
         if ans is None:
-            if self._sock is s:
+            if self._sock is not s:  # the connection broke: local, without counting it
+                return None
+            self.counts["timeouts"] += 1
+            self._failed_once(f"remote slower than {ms} ms")
+            if local is None:
                 self._cancel(s, i)
-                self.counts["timeouts"] += 1
-                self._until = time.monotonic() + self.backoff_s
-                log(f"remote slower than {ms} ms: local for {self.backoff_s:.0f} s")
-            return None
-        if "error" in ans:  # broken there (7E.1: MLX's CUDA graph cache): local for a while, as for a timeout
+                return None
+            return self._race(s, i, stop, local)
+        if "error" in ans:  # broken there (7E.1: MLX's CUDA graph cache)
             self.counts["errors"] += 1
-            self._until = time.monotonic() + self.backoff_s
-            log(f"remote error ({ans['error']}): local for {self.backoff_s:.0f} s")
+            self._failed_once(f"remote error ({ans['error']})")
             return None
+        self._failed = 0
         return ans
+
+    def _failed_once(self, why):
+        self._failed += 1
+        if self._failed >= self.fails:
+            self._failed = 0
+            self._until = time.monotonic() + self.backoff_s
+            log(f"{why}, {self.fails} in a row: local for {self.backoff_s:.0f} s")
+        else:
+            log(why)
+
+    def _usable(self, i):
+        ans = self._answers.get(i)
+        return ans is not None and "error" not in ans and ans.get("cands") is not None
+
+    def _race(self, s, i, stop, local):
+        """The local engine on the request the remote was too slow for, while the remote goes on with it (7E.2)."""
+        out = local(lambda: (stop is not None and stop()) or self._usable(i))
+        if self._usable(i):  # the remote's came first (or while the local one finished its last step)
+            self.counts["raced_remote"] += 1
+            return self._answers.pop(i), "remote"
+        if stop and stop():
+            self._cancel(s, i)
+            return "stopped"
+        self._cancel(s, i)
+        self.counts["raced_local"] += 1
+        return out, "local"
 
     def _cancel(self, s, i):
         try:
@@ -302,20 +337,29 @@ class RemoteEngine:
         threading.Timer(5, lambda: self._answers.pop(i, None)).start()  # its late answer, if any
 
     def convert(self, context, keys, k=5, beam=None, mix=True, prefix=None, stop=None, eos=True, prefixes=None):
+        def here(stop):
+            return self.local.convert(context, keys, k=k, beam=beam, mix=mix, prefix=prefix, stop=stop, eos=eos,
+                                      **({"prefixes": prefixes} if prefixes else {}))
+
         if self.remote_ok and keys and not prefixes:
             quick = max(beam if isinstance(beam, (tuple, list)) else [beam or 99]) <= self.quick_beam
             ans = self._ask({"op": "convert", "context": context, "keys": keys, "k": k, "beam": beam, "mix": mix,
                              "prefix": [list(x) for x in prefix] if prefix else None, "eos": eos},
-                            self.quick_ms if quick else self.full_ms, stop)
+                            self.quick_ms if quick else self.full_ms, stop, local=here)
             if ans == "stopped":
                 return None
+            if isinstance(ans, tuple):  # raced (7E.2)
+                ans, side = ans
+                if side == "local":
+                    return self._local_done(ans)
             if ans is not None and (ans["cands"] is not None or (stop and stop())):
                 self.paths = {t: tuple(tuple(x) for x in p) for t, p in ans.get("paths", {}).items()}
                 self.last_by = "remote"
                 self.counts["remote"] += 1
                 return ans["cands"]
-        out = self.local.convert(context, keys, k=k, beam=beam, mix=mix, prefix=prefix, stop=stop, eos=eos,
-                                 **({"prefixes": prefixes} if prefixes else {}))
+        return self._local_done(here(stop))
+
+    def _local_done(self, out):
         self.paths = self.local.paths
         self.last_by = "local"
         self.counts["local"] += 1
@@ -338,7 +382,7 @@ class RemoteEngine:
     def set_on(self, on):
         self.on = bool(on)
         if self.on:
-            self._until = 0.0
+            self._until, self._failed = 0.0, 0
             self._wake.set()
 
     def forget(self):

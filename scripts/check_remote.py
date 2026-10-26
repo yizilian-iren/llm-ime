@@ -2,8 +2,8 @@
 
   .venv/bin/python scripts/check_remote.py
 
-The remote answers when it is up (its token paths too); slower than quick_ms, the local engine answers and the remote
-is left alone for backoff_s; a newer key (stop) drops the remote search; the service down, another model there, a
+The remote answers when it is up (its token paths too); slower than quick_ms, the local engine races it and the first
+answer is used (7E.2); three timeouts or errors in a row leave the remote alone for backoff_s; a newer key (stop) drops the remote search; the service down, another model there, a
 wrong token or the menu's 远程计算 off: the local engine, without waiting. Exits 1 when a check fails.
 """
 
@@ -93,19 +93,56 @@ check("quick options and the prefix go along", far.calls[-1] == ("nihao", 3, 3, 
 check("segments and score from the remote", r.segments("", "ni") == [("far", 1)] and r.score("", "x", ["ab"]) == [2.0])
 check("the rest is the local engine's", r.prefixes == {"ni", "hao"})
 
-far.delay = 0.2  # slower than quick_ms
+far.delay = 0.2  # slower than quick_ms: raced (7E.2)
 t = time.monotonic()
 out = r.convert("", "hao", k=3, beam=3)
 ms = (time.monotonic() - t) * 1000
-check(f"slow remote: the local engine answers ({ms:.0f} ms)", out == ["near:hao"] and r.last_by == "local" and ms < 150)
-t = time.monotonic()
-r.convert("", "hao", k=5)
-check("then local at once while backing off", r.last_by == "local" and (time.monotonic() - t) < 0.05)
+check(f"slow remote: the local engine answers ({ms:.0f} ms)", out == ["near:hao"] and r.last_by == "local" and ms < 150
+      and r.counts["raced_local"] == 1)
 time.sleep(0.25)
-check("the remote dropped the search it was too slow for", far.stopped >= 1)
+check("the remote dropped the search the local one won", far.stopped >= 1)
 far.delay = 0.0
-time.sleep(0.4)
+check("one timeout: the remote is asked again", r.convert("", "hao") == ["far:hao"] and r.last_by == "remote")
+
+far.delay, local.delay = 0.15, 0.6  # both slow: the remote's comes first
+t = time.monotonic()
+out = r.convert("", "nihao", k=5, beam=3)
+ms = (time.monotonic() - t) * 1000
+check(f"raced: the remote's answer, the local search stopped ({ms:.0f} ms)",
+      out == ["far:nihao"] and r.last_by == "remote" and local.stopped == 1 and ms < 300
+      and r.paths == {"far:nihao": ((7, 5),)} and r.counts["raced_remote"] == 1)
+local.delay = 0.0
+r.convert("", "ni")  # in time: the timeouts in a row start again
+
+far.delay = 0.2
+for _ in range(2):
+    r.convert("", "ni", beam=3)
+far.delay = 0.0
+check("an answer in time ends the run of timeouts", r.convert("", "ni") == ["far:ni"])
+far.delay = 0.2
+r.convert("", "ni", beam=3)
+r.convert("", "ni", beam=3)
+check("two in a row: still asked", r.remote_ok)
+r.convert("", "ni", beam=3)
+far.delay = 0.0
+time.sleep(0.3)
+n = len(far.calls)
+t = time.monotonic()
+check("three in a row: local at once while backing off", not r.remote_ok and
+      r.convert("", "hao", k=5) == ["near:hao"] and (time.monotonic() - t) < 0.05)
+time.sleep(0.05)
+check("and the remote not asked", len(far.calls) == n)
+time.sleep(0.5)
 check("after backoff_s the remote again", r.convert("", "hao") == ["far:hao"])
+
+far.delay, local.delay = 0.3, 0.3  # a newer key while racing
+stop_at = time.monotonic() + 0.12
+t = time.monotonic()
+out = r.convert("", "nihaoma", k=5, beam=3, stop=lambda: time.monotonic() > stop_at)
+check("a newer key while racing stops both", out is None and (time.monotonic() - t) < 0.18)
+far.delay, local.delay = 0.0, 0.0
+time.sleep(0.4)
+r.convert("", "ni")  # in time
 
 far.delay = 0.25
 stop_at = time.monotonic() + 0.05
@@ -116,9 +153,13 @@ time.sleep(0.1)
 check("and the remote drops it", far.stopped >= 2)
 far.delay = 0.0
 
-far.fail = True  # an error there: local, and local for backoff_s
-check("an error there: local", r.convert("", "ni") == ["near:ni"] and r.counts["errors"] == 1)
-check("then local without asking", r.convert("", "ni") == ["near:ni"] and r.counts["errors"] == 1)
+far.fail = True  # errors there: local; three in a row: local for backoff_s
+e0 = r.counts["errors"]
+check("an error there: local", r.convert("", "ni") == ["near:ni"] and r.counts["errors"] == e0 + 1)
+r.convert("", "ni")
+check("then asked again", r.counts["errors"] == e0 + 2)
+r.convert("", "ni")
+check("third in a row: local without asking", r.convert("", "ni") == ["near:ni"] and r.counts["errors"] == e0 + 3)
 far.fail = False
 time.sleep(0.6)
 check("after backoff_s the remote again", r.convert("", "ni") == ["far:ni"])

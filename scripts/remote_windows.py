@@ -1,5 +1,5 @@
 """Quick answers around the remote engine's timeouts (7E.2): per timeout in engine.log, the remote's answers in the 30 s
-before and after, the local ones in its backoff window; then all quick answers by side and by the n-th local answer
+before and after, the local ones in its window (the backoff, or 2 s for a raced one, 7E.2); then all quick answers by side and by the n-th local answer
 after a timeout; then the minutes where the local p50 was 200 ms or more (with or without a timeout).
 
   ssh m3 /usr/bin/python3 - DAY [DAY ...] < scripts/remote_windows.py
@@ -18,6 +18,7 @@ import sys
 LOG = os.path.expanduser("~/Library/Application Support/llm-ime/log")
 ENGINE_LOG = os.path.expanduser("~/Library/Logs/llm-ime/engine.log")
 BACKOFF_S = 21
+RACE_S = 2
 
 
 def pct(xs, q):
@@ -30,10 +31,13 @@ def line(name, xs):
 
 
 def timeouts(day):
+    """(time, window s) of each timeout: BACKOFF_S when it left the remote alone ("local for"; before 7E.2 every
+    timeout did), else RACE_S (7E.2: raced, the remote asked again from the next key)."""
     out = []
     for l in open(ENGINE_LOG, encoding="utf-8"):
         if l.startswith(day) and "remote slower" in l:
-            out.append(datetime.datetime.strptime(l[:19], "%Y-%m-%d %H:%M:%S").timestamp())
+            t = datetime.datetime.strptime(l[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+            out.append((t, BACKOFF_S if "local for" in l else RACE_S))
     return out
 
 
@@ -60,12 +64,13 @@ def answers(day):
 
 def main():
     for day in sys.argv[1:]:
-        tos, rows = timeouts(day), answers(day)
-        print(f"== {day}: {len(tos)} timeouts")
-        for t0 in tos:
+        wins, rows = timeouts(day), answers(day)
+        tos = [t for t, _w in wins]
+        print(f"== {day}: {len(tos)} timeouts, {sum(w == BACKOFF_S for _t, w in wins)} backoffs")
+        for t0, win in wins:
             pre = [ms for at, ms, s in rows if t0 - 30 <= at < t0 and s == "r"]
-            loc = [ms for at, ms, s in rows if t0 <= at < t0 + BACKOFF_S and s == "l"]
-            post = [ms for at, ms, s in rows if t0 + BACKOFF_S <= at < t0 + 50 and s == "r"]
+            loc = [ms for at, ms, s in rows if t0 <= at < t0 + win and s == "l"]
+            post = [ms for at, ms, s in rows if t0 + win <= at < t0 + 50 and s == "r"]
             print(datetime.datetime.fromtimestamp(t0).strftime("%H:%M:%S"),
                   f"remote before n={len(pre):3d} p50={pct(pre, .5):4d} | local n={len(loc):3d} p50={pct(loc, .5):4d}"
                   f" max={max(loc or [-1]):5d} first={loc[0] if loc else -1:5d} | remote after p50={pct(post, .5):4d}")
@@ -75,8 +80,8 @@ def main():
             i = bisect.bisect_right(tos, at) - 1
             if s == "r":
                 side["remote"].append(ms)
-            elif i >= 0 and at - tos[i] <= BACKOFF_S:
-                side["local backoff"].append(ms)
+            elif i >= 0 and at - tos[i] <= wins[i][1]:
+                side["local after timeout"].append(ms)
                 idx = idx + 1 if last == i else 1
                 last = i
                 nth[min(idx, 9)].append(ms)
