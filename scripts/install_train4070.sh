@@ -1,7 +1,7 @@
 #!/bin/sh
 # home4070's training environment (6A.1, scripts/retrain.py): ~/llm-ime/.venv-train from scripts/requirements-train.txt
-# (python 3.13, torch cu130). Run from M4 after a fresh install; safe to run again. What else a fresh machine needs
-# for the weekly retrain: models/<base>-hf (rsync from M4's models/) and data/replay/<base>.npz (from dgx,
+# (python 3.13, torch cu130). Run from mini after a fresh install; safe to run again. What else a fresh machine needs
+# for the weekly retrain: models/<base>-hf (rsync from mini's models/) and data/replay/<base>.npz (from dgx,
 # ~/llm-ime/data/replay-r6/train.npz is r6-4bit.npz: sha256 313dd9cf..., 268654906 B), then scripts/install_remote4070.sh.
 set -e
 cd "$(dirname "$0")/.."

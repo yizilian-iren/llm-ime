@@ -1,5 +1,5 @@
 #!/bin/sh
-# The engine's remote half on home4070 (7E.1, ime.remote): installs it from HEAD, from M4. Safe to run again.
+# The engine's remote half on home4070 (7E.1, ime.remote): installs it from HEAD, from mini. Safe to run again.
 #   scripts/install_remote4070.sh          the service on home4070 (code, models, venv, systemd user service)
 #   scripts/install_remote4070.sh m3       and M3's remote.json (its engine service then asks home4070 first;
 #                                          restart it, or deploy, to take it up)
@@ -14,7 +14,7 @@
 #   systemd user service llm-ime-remote    python -m ime.remote serve on the Tailscale address only
 # Its log (journalctl --user -u llm-ime-remote) has times and errors only; nothing typed is written there (D-049).
 # The models: r6-4bit and the base mixed in, and the personal model M3 runs (models/personal-4bit there), from
-# M4's copy (the weekly retrain's held/ or runs/); scripts/retrain.py pushes each new one after deploying it to M3.
+# mini's copy (the weekly retrain's held/ or runs/); scripts/retrain.py pushes each new one after deploying it to M3.
 set -e
 cd "$(dirname "$0")/.."
 SSH="ssh -o ClearAllForwardings=yes"
@@ -52,7 +52,7 @@ if [ -n "$P" ]; then
     rsync -a --delete -e "$SSH" "$SRC/" "$GPU:llm-ime/remote/models/$P/"
     $SSH $GPU "cd ~/llm-ime/remote/models && ln -sfn $P personal-4bit && for d in personal-2*-4bit; do [ \$d = $P ] || rm -rf \$d; done"
   else
-    echo "no copy of M3's $P on M4: home4070 runs the base, and M3 will not use it until the next retrain" >&2
+    echo "no copy of M3's $P on mini: home4070 runs the base, and M3 will not use it until the next retrain" >&2
   fi
 else
   $SSH $GPU 'cd ~/llm-ime/remote/models && rm -rf personal-4bit personal-2*-4bit'

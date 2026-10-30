@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the input method on M4 and installs it and the engine service on M3 (4A.3). Safe to run again.
+# Builds the input method on mini and installs it and the engine service on M3 (4A.3). Safe to run again.
 #   scripts/deploy_m3.sh [host]        (default host: m3)
 #
 # On M3:

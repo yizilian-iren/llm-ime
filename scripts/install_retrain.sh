@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the weekly retrain (6A.2) on M4, the Mac it runs on, from HEAD. Safe to run again.
+# Installs the weekly retrain (6A.2) on mini, the Mac it runs on, from HEAD. Safe to run again.
 #   scripts/install_retrain.sh            install, or update the code
 #   scripts/install_retrain.sh --remove   stop it (the runs' numbers in runs/ stay)
 #
@@ -9,7 +9,7 @@
 # ~/Library/LaunchAgents/com.llm-ime.retrain.plist   scripts/retrain.py every hour at :05 (StartCalendarInterval:
 #                                                    StartInterval 3600 never fired on M4 in 2 hours, 10-19)
 # ~/Library/Logs/llm-ime/retrain.log                 what it did (counts and times only)
-# Needs on M4: ~/Projects/llm-ime/models/<base>-hf for the deployed base, and data/private/eval.jsonl; on home4070:
+# Needs on mini: ~/Projects/llm-ime/models/<base>-hf for the deployed base, and data/private/eval.jsonl; on home4070:
 # ~/llm-ime/.venv-train, data/replay/<base>.npz (public samples in the base's format; 6A.1).
 set -e
 cd "$(dirname "$0")/.."

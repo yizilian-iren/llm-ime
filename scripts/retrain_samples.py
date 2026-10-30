@@ -2,7 +2,7 @@
 
   cd ~/Library/Application\\ Support/llm-ime/engine && PYTHONPATH=. ~/Projects/llm-ime/.venv/bin/python - [--dir DIR] < scripts/retrain_samples.py
 
-Read by scripts/retrain.py on M4, which keeps them only for the run (D-019, D-038: the user's own machines only,
+Read by scripts/retrain.py on mini, which keeps them only for the run (D-019, D-038: the user's own machines only,
 deleted after). A sample is a commit of a candidate (picked, not the letters) whose text is 1-16 Han characters
 the keys as typed read (a start of the keys, 4A.10: the keys it used), not deleted right after:
 {"day", "context", "keys", "text", "pieces"} (pieces: each character's keys). The last line is the counts:

@@ -2,19 +2,19 @@
 
   ~/Library/Application\\ Support/llm-ime-retrain/code/.venv/bin/python scripts/retrain.py [--now]
 
-Runs on M4, every hour (launchd, scripts/install_retrain.sh); each run does what the week's run is waiting for and
+Runs on mini, every hour (launchd, scripts/install_retrain.sh); each run does what the week's run is waiting for and
 exits. A week's run starts Sunday 03:30 and goes through these stages, each retried the next hour while it waits:
   fetch    M3 (a laptop: may be closed) prints the samples (scripts/retrain_samples.py); not after Monday 09:00.
   train    at night (00:00-09:00) when home4070's GPU is idle (the user games on it): samples -> npz there
            (scripts/retrain_npz.py), a LoRA on the deployed base (ime.engine.base_model) with as many public
-           samples replayed, the merged model back to M4 as MLX 4-bit. Not after Monday 09:00.
-  eval     on M4: the first candidate on the test days (scripts/retrain_eval.py) and run_eval.py --limit 100, the
+           samples replayed, the merged model back to mini as MLX 4-bit. Not after Monday 09:00.
+  eval     on mini: the first candidate on the test days (scripts/retrain_eval.py) and run_eval.py --limit 100, the
            new model against the base.
   deploy   if better: when M3 is up (a restart is 3 s, so not waiting for the user to stop typing), the model goes
            to M3's models/personal-<day>-4bit, models/personal-4bit points at it (ime.engine.personal_or), the
            engine service restarts. Until the next week's run starts.
 The test days: the newest third of the days in the log while it has fewer than 14, then the newest 7. Training
-data lives only on M3, M4 and home4070 (D-038) and is deleted after; the adapter and the numbers stay in
+data lives only on M3, mini and home4070 (D-038) and is deleted after; the adapter and the numbers stay in
 runs/<day>/. Every outcome is a section of M3's log/retrain.md (counts only, beside the daily summaries, where the
 main agent reads them); a failure also shows a notification on M3. The input method's menu item 暂停每周重训
 (retrainPaused) skips the week. --now: start a new run now (its training still waits for the night and an
@@ -179,7 +179,7 @@ def train(run, work, now):
     base, hf = run["base"], run["base"].replace("-4bit", "-hf")
     models = os.path.join(CODE, "models")
     if not os.path.isdir(os.path.join(models, hf)):
-        raise Skip(f"no models/{hf} on M4 to train on")
+        raise Skip(f"no models/{hf} on mini to train on")
     order_file = os.path.join(models, base, "ime_format")
     order = (open(order_file).read().strip() or "ctx_first") if os.path.exists(order_file) else "ctx_first"
     replay = f"data/replay/{base}.npz"
