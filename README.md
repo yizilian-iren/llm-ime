@@ -76,7 +76,7 @@ The table is the whole-sentence search (all keys, the first candidate), not the 
 - **The base model must score with its own tokenization.** Fed one character per token, it underrates characters it normally writes inside a longer token (还 in 还有).
 - **A typo-corrected reading needs a search with the corrected keys.** The fine-tuned model scores against the keys in its prompt, so a corrected reading scored under the keys as typed always loses. Corrected readings are added, in beam rows of their own, only for keys that cannot be read as typed, so they don't push out abbreviations.
 - **Measure before deciding what is slow.** The typing log suggested typo handling made typing 13–14% slower, but the cause was waiting for the previous key's full search. A script that alternates old and new code key by key in one process (`scripts/typo_bench.py`) showed less than 1% at p50.
-- **Training on a home 4070.** About 7.5 of its 12 GB are taken by other uses; LoRA, gradient checkpointing and 4k-token batches fit training into 2.2 GB.
+- **Training on a home 4070.** The card (12 GB, on Ubuntu) also keeps a text-to-speech model and this input method's remote engine loaded; LoRA, gradient checkpointing and 4k-token batches fit training into 2.2 GB beside them.
 
 ## Privacy
 
