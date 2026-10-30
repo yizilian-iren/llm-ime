@@ -16,13 +16,13 @@
 - **看前文**：同一串键，前文不同出的句子不同。完全没有前文时（全拼 P@1），零样本 43.1；只用聊天文体的数据微调补上了一部分（53.9），和底座合打分补上了大半（71.4）。
 - **打错也认得**：相邻两键打反（`zhognguo` → 中国），多打、漏打一个键或按到相邻键（`kanyuix` → 看一下）。
 - **记住用户的词**：选过的候选存进本机的词表，下次往前排。每周用用户自己的上屏记录对模型做一次 LoRA 重训，评测变好才换上。
-- **不让人等**：每按一个键只给一次快猜的结果（M3 MacBook Air 上真实打字的 p50：1–3 个键 46 ms，4–8 个键 69 ms，9 个键以上 68 ms）；停顿一会儿后再把更多候选补成后面几页。
+- **不让人等**：每按一个键只给一次快猜的结果（M3 MacBook Air 加家里 RTX 4070 上的远程引擎、真实打字的 p50：1–3 个键 29 ms，4–8 个键 38 ms，9 个键以上 47 ms；只用 Mac 时是 41 / 64 / 63 ms）；停顿一会儿后再把更多候选补成后面几页。
 
 ## 架构
 
 ```mermaid
 flowchart LR
-  subgraph Mac["Mac（转换全在本机）"]
+  subgraph Mac["Mac"]
     App["应用<br/>（编辑器等）"]
     Shell["输入法本体<br/>Swift + InputMethodKit<br/>shell/"]
     Engine["引擎服务<br/>Python, launchd<br/>ime/server.py"]
@@ -35,12 +35,13 @@ flowchart LR
     Engine <--> Words
     Shell --> Log
   end
+  Engine <-->|"先回的为准"| Remote["远程引擎<br/>同一个模型，MLX CUDA<br/>家里的 RTX 4070，ime/remote.py"]
   Log -.->|"每周一次：只取上屏的候选<br/>（只在用户自己的机器之间）"| Retrain["重训<br/>家里的 GPU 上训 LoRA"]
   Retrain -.->|"评测变好才换"| Model
 ```
 
 - **输入法本体（`shell/`）**：用 InputMethodKit 写的 Swift 程序，管候选窗、翻页、上屏和打字记录。不用 Xcode，只用 Command Line Tools 的 `swiftc` 构建（`shell/build.sh`）。
-- **引擎服务（`ime/server.py`）**：每个键一个请求，旧请求丢掉、只回最新的。默认每个键只回一次 `quick`（短搜索），停顿后再把更多候选补成后面几页；菜单里的「两遍计算」可以切回两遍：先回 `quick`，再回 `full`（整句 beam search）。
+- **引擎服务（`ime/server.py`）**：每个键一个请求，旧请求丢掉、只回最新的。默认每个键只回一次 `quick`（短搜索），停顿后再把更多候选补成后面几页；菜单里的「两遍计算」可以切回两遍：先回 `quick`，再回 `full`（整句 beam search）。默认每个请求先发给家里 RTX 4070 上的同一个模型（`ime/remote.py`，MLX 的 CUDA 后端；那边不存打的字）；150 ms 内没回，Mac 上的本机引擎也开始算，哪边先回用哪边。远程连续失败三次后 20 s 内只用 Mac 算，连不上远程时也只用 Mac。
 - **转换（`ime/llm.py`）**：模型词表里全是汉字的 token 按每个字的读音放进 trie，beam search 只沿着和键串对得上的 token 走。所有 beam 一起算一个 batch，前文的 KV cache 复用。
 
 ## 模型和训练

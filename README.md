@@ -16,13 +16,13 @@ Typing only initials in an editor; space enters the sentence ([mp4](assets/demo/
 - **Reads the context**: the same keys give different sentences after different text. With no context at all (full pinyin, P@1) zero-shot gets 43.1; fine-tuning on chat-style data alone makes up part of it (53.9), and scoring together with the base model makes up most (71.4).
 - **Forgives typos**: two adjacent keys swapped (`zhognguo` → 中国), a key too many, a key missing, or the key next to the right one (`kanyuix` → 看一下) still read right.
 - **Learns your words**: picked candidates go into a word list on the Mac and come first next time. Once a week the model is retrained with a LoRA on the sentences you typed and picked that week, and swapped in only if it scores better.
-- **Doesn't keep you waiting**: every key gets one quick answer (p50 46 ms for 1–3 keys, 69 ms for 4–8 keys, 68 ms for 9 or more, from real typing on an M3 MacBook Air); after a short pause the engine adds further candidates as later pages.
+- **Doesn't keep you waiting**: every key gets one quick answer (p50 29 ms for 1–3 keys, 38 ms for 4–8 keys, 47 ms for 9 or more, from real typing on an M3 MacBook Air with the remote engine on a home RTX 4070; on the Mac alone 41 / 64 / 63 ms); after a short pause the engine adds further candidates as later pages.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  subgraph Mac["Mac (all conversion happens here)"]
+  subgraph Mac["Mac"]
     App["App<br/>(an editor, etc.)"]
     Shell["Input method<br/>Swift + InputMethodKit<br/>shell/"]
     Engine["Engine service<br/>Python, launchd<br/>ime/server.py"]
@@ -35,12 +35,13 @@ flowchart LR
     Engine <--> Words
     Shell --> Log
   end
+  Engine <-->|"first answer wins"| Remote["Remote engine<br/>same model, MLX CUDA<br/>home RTX 4070, ime/remote.py"]
   Log -.->|"weekly: picked candidates only<br/>(between the user's own machines)"| Retrain["Retraining<br/>LoRA on a home GPU"]
   Retrain -.->|"only if it scores better"| Model
 ```
 
 - **Input method (`shell/`)**: a Swift app on InputMethodKit. It handles the candidate window, paging, entering the picked text and the typing log. It builds with the Command Line Tools' `swiftc` alone, no Xcode (`shell/build.sh`).
-- **Engine service (`ime/server.py`)**: takes a request per key, drops stale ones and answers only the newest. By default each key gets one answer, `quick` (a short search), and after a short pause further candidates are added as later pages; the menu item 两遍计算 switches back to two passes, `quick` right away and then `full` (a beam search over the whole sentence).
+- **Engine service (`ime/server.py`)**: takes a request per key, drops stale ones and answers only the newest. By default each key gets one answer, `quick` (a short search), and after a short pause further candidates are added as later pages; the menu item 两遍计算 switches back to two passes, `quick` right away and then `full` (a beam search over the whole sentence). By default each request is sent to the same model on a home RTX 4070 (`ime/remote.py`, MLX's CUDA backend; nothing typed is stored there); if it has not answered within 150 ms, the Mac's own engine computes it too and the first answer wins. After three failures in a row the Mac computes alone for 20 s, and it always does when the remote cannot be reached.
 - **Conversion (`ime/llm.py`)**: every token in the model's vocabulary made only of Han characters is indexed in a trie by its characters' readings. The beam search uses this trie to extend only the tokens that fit the typed keys. All beams run as one batch, and the context's KV cache is reused.
 
 ## Model and training
